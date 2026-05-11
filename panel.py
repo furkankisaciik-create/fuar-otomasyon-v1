@@ -162,23 +162,71 @@ if 'ana_liste' not in st.session_state:
 st.subheader("📥 Veri Giriş Kanalları")
 k1, k2, k3, k4 = st.tabs(["🌐 URL", "📄 PDF", "📊 EXCEL", "📂 MANUEL"])
 
+# --- URL TARAMA MOTORU (k1) ---
 with k1:
-    url_input = st.text_input("Web sitesi URL girin:")
-    if st.button("URL'den Oku"):
-        st.warning("Bu özellik bir sonraki güncellemede aktif olacak.")
+    st.subheader("🌐 Web Sitesinden Veri Çek")
+    url_input = st.text_input("Fuar Katılımcı Listesi URL'si:", placeholder="https://musiadexpo.com/tr/2026-katilimci-firmalar")
+    
+    if st.button("🔍 URL'den Oku"):
+        if url_input:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            try:
+                with st.spinner("Site analiz ediliyor..."):
+                    response = requests.get(url_input, headers=headers, timeout=20, verify=False)
+                    response.encoding = response.apparent_encoding
+                    html_content = response.text
+                    
+                    # Firma isimlerini yakalamak için yaygın HTML etiketlerini tarar
+                    bulunanlar = re.findall(r'<(?:h3|strong|b|span class="title")>(.*?)</(?:h3|strong|b|span)>', html_content)
+                    
+                    # Temizlik ve Filtreleme
+                    temiz_liste = []
+                    for isim in bulunanlar:
+                        temiz = re.sub('<.*?>', '', isim).strip()
+                        if len(temiz) > 2 and len(temiz) < 100: # Çok kısa veya çok uzun başlıkları eler
+                            temiz_liste.append(temiz)
+                    
+                    if temiz_liste:
+                        st.session_state['ana_liste'] = list(set(temiz_liste)) # Tekrarları siler
+                        st.success(f"✅ Sayfada {len(st.session_state['ana_liste'])} potansiyel firma bulundu! Aşağıdaki havuzdan taramayı başlatabilirsiniz.")
+                        st.rerun()
+                    else:
+                        st.warning("Sitede otomatik bir liste bulunamadı. Lütfen URL'yi kontrol edin.")
+            except Exception as e:
+                st.error(f"Bağlantı Hatası: {e}")
+        else:
+            st.warning("Lütfen bir URL girin.")
 
+# --- PDF TARAMA MOTORU (k2) ---
 with k2:
+    st.subheader("📄 PDF Katalogtan Veri Çek")
     pdf_dosya = st.file_uploader("Firma Listesi içeren PDF yükleyin", type=['pdf'])
+    
     if pdf_dosya:
-        reader = PdfReader(pdf_dosya)
-        pdf_metin = ""
-        for page in reader.pages:
-            pdf_metin += page.extract_text()
-        # Basit bir mantıkla satırları firma ismi olarak alıyoruz
-        firmalar = [f.strip() for f in pdf_metin.split('\n') if len(f.strip()) > 2]
-        if st.button(f"{len(firmalar)} Firmayı PDF'den Aktar"):
-            st.session_state['ana_liste'] = firmalar
-            st.success("PDF Verileri Havuza Alındı!")
+        try:
+            with st.spinner("PDF okunuyor..."):
+                import pdfplumber # requirements.txt'ye eklediğinden emin ol
+                with pdfplumber.open(pdf_dosya) as pdf:
+                    tam_metin = ""
+                    for page in pdf.pages:
+                        extracted = page.extract_text()
+                        if extracted:
+                            tam_metin += extracted + "\n"
+                
+                # E-posta adreslerini firma temsilcisi olarak yakalar
+                mailler = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', tam_metin)
+                # Telefon numaralarını yakalar
+                teller = re.findall(r'\+?\d[\d\s-]{8,12}\d', tam_metin)
+                
+                # Basit bir mantıkla satırları firma ismi olarak alır (en az 3 harfli satırlar)
+                satirlar = [s.strip() for s in tam_metin.split('\n') if len(s.strip()) > 3]
+                
+                if satirlar:
+                    st.session_state['ana_liste'] = satirlar[:100] # Çok büyük PDF'ler için ilk 100 satır
+                    st.success(f"✅ PDF içeriği okundu! {len(satirlar)} satır firma havuzuna eklendi.")
+                    st.rerun()
+        except Exception as e:
+            st.error(f"PDF işleme hatası: {e}")
 
 with k3:
     excel_dosya = st.file_uploader("Excel Dosyası Yükleyin", type=['xlsx', 'xls'])
