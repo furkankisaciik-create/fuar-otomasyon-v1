@@ -1,6 +1,5 @@
 streamlit
 pandas
-DrissionPage==4.0.5.5
 requests
-PyPDF2
+beautifulsoup4
 openpyxl
