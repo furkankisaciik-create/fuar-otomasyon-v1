@@ -73,25 +73,50 @@ def veri_ayikla(html):
     return c_tel, c_mail
 
 def tekli_sorgu(firma, etiket):
+    p = None
     link = "Bulunamadı"
     t, m = "Bulunamadı", "Bulunamadı"
     
     try:
-        # 1. AŞAMA: Doğrudan Google Arama API'sini (Sessizce) Taklit Etme
-        # DuckDuckGo veya Bing yerine Google'ın hızlı sonuçlarını çekiyoruz
-        search_url = f"https://www.google.com/search?q={firma}+resmi+web+sitesi+iletisim"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
+        co = get_browser_options()
+        p = WebPage(addr_or_opts=co)
         
-        response = requests.get(search_url, headers=headers, timeout=10)
-        # HTML içinden ilk linki cımbızla çekiyoruz
-        links = re.findall(r'href="(https?://.*?)"', response.text)
+        # 1. AŞAMA: DuckDuckGo üzerinden arama (Bot dostu)
+        # Arama terimini 'contact' ve 'iletişim' ile güçlendiriyoruz
+        p.get(f'https://duckduckgo.com/html/?q={firma}+official+website+contact+communication')
+        time.sleep(3)
         
-        # Google reklamlarını ve kendi linklerini eleyip ilk gerçek siteyi alıyoruz
-        for l in links:
-            if "google.com" not in l and "youtube.com" not in l:
-                link = l
+        # DuckDuckGo HTML versiyonu üzerinden linki yakalıyoruz (Daha garantidir)
+        # Önce tüm linkleri tara, reklam olmayan ilk sonucu al
+        results = p.eles('tag:a')
+        for res in results:
+            href = res.attr('href')
+            if href and 'http' in href and 'duckduckgo' not in href:
+                link = href
                 break
-
+        
+        # 2. AŞAMA: Bulunan siteye git ve iletişim bilgilerini çek
+        if link != "Bulunamadı":
+            p.get(link)
+            time.sleep(4) # Sayfanın tam yüklenmesi için 4 saniye
+            t, m = veri_ayikla(p.html)
+            
+            # Eğer ana sayfada bulamazsa /contact veya /iletisim sayfasına bakmayı dene
+            if t == "Bulunamadı" and m == "Bulunamadı":
+                contact_link = p.ele('text:iletişim') or p.ele('text:contact') or p.ele('text:İLETİŞİM')
+                if contact_link:
+                    contact_link.click()
+                    time.sleep(3)
+                    t, m = veri_ayikla(p.html)
+        
+        p.quit()
+        veriyi_kaydet(etiket, firma, link, t, m)
+        return True
+        
+    except Exception as e:
+        if p: p.quit()
+        veriyi_kaydet(etiket, firma, link, "Bağlantı Sorunu", "Bağlantı Sorunu")
+        return False
         # 2. AŞAMA: Siteye Girip Veri Çekme
         if link != "Bulunamadı":
             co = get_browser_options()
