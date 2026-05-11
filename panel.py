@@ -73,31 +73,40 @@ def veri_ayikla(html):
     return c_tel, c_mail
 
 def tekli_sorgu(firma, etiket):
-    p = None
+    link = "Bulunamadı"
+    t, m = "Bulunamadı", "Bulunamadı"
+    
     try:
-        co = get_browser_options()
-        p = WebPage(addr_or_opts=co)
-        # Daha hızlı ve bot dostu olan DuckDuckGo'ya geçtik
-        p.get(f'https://duckduckgo.com/?q={firma}+official+website+contact')
-        time.sleep(2) # Sayfanın yüklenmesi için biraz süre tanıyalım
+        # 1. AŞAMA: Doğrudan Google Arama API'sini (Sessizce) Taklit Etme
+        # DuckDuckGo veya Bing yerine Google'ın hızlı sonuçlarını çekiyoruz
+        search_url = f"https://www.google.com/search?q={firma}+resmi+web+sitesi+iletisim"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
         
-        # İlk çıkan linki daha garantili bir yöntemle alalım
-        link = p.ele('tag:a', arg='class=result__a').attr('href')
+        response = requests.get(search_url, headers=headers, timeout=10)
+        # HTML içinden ilk linki cımbızla çekiyoruz
+        links = re.findall(r'href="(https?://.*?)"', response.text)
         
-        if link:
+        # Google reklamlarını ve kendi linklerini eleyip ilk gerçek siteyi alıyoruz
+        for l in links:
+            if "google.com" not in l and "youtube.com" not in l:
+                link = l
+                break
+
+        # 2. AŞAMA: Siteye Girip Veri Çekme
+        if link != "Bulunamadı":
+            co = get_browser_options()
+            p = WebPage(addr_or_opts=co)
             p.get(link)
-            time.sleep(2)
+            time.sleep(3) # Sayfanın iyice açılmasını bekleyelim
             t, m = veri_ayikla(p.html)
             p.quit()
-            veriyi_kaydet(etiket, firma, link, t, m)
-            return True
-        else:
-            raise Exception("Link bulunamadı")
-    except:
-        if p: p.quit()
-        veriyi_kaydet(etiket, firma, "Bağlantı Hatası", "Bulunamadı", "Bulunamadı")
+        
+        veriyi_kaydet(etiket, firma, link, t, m)
+        return True
+        
+    except Exception as e:
+        veriyi_kaydet(etiket, firma, link, "Hata", "Hata")
         return False
-
 # --- KENAR ÇUBUĞU ---
 st.sidebar.markdown(f"### ⚙️ {FIRMA_1} Kontrol")
 hiz = st.sidebar.slider("Tarama Hızı", 1, 5, 2)
