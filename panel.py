@@ -13,13 +13,14 @@ from datetime import datetime
 # --- BULUT (CLOUD) AYARLARI ---
 def get_browser_options():
     co = ChromiumOptions()
-    co.set_paths(browser_path='/usr/bin/google-chrome') # Sunucudaki Chrome yolu
-    co.headless() # Ekransız mod (Zorunlu)
+    # Streamlit Cloud'da Chromium yolu genellikle buradadır:
+    co.set_paths(browser_path='/usr/bin/chromium') 
+    co.headless() 
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
     co.set_argument('--disable-dev-shm-usage')
+    co.set_argument('--remote-debugging-port=9222')
     return co
-
 # --- VERİTABANI İŞLEMLERİ ---
 def tabloyu_hazirla():
     conn = sqlite3.connect('fuar_verileri.db')
