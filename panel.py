@@ -1,26 +1,24 @@
-import streamlit as st
+iimport streamlit as st
 import pandas as pd
-from DrissionPage import WebPage, ChromiumOptions
-import time
-import io
-import re
 import sqlite3
 import requests
-from PyPDF2 import PdfReader
-from concurrent.futures import ThreadPoolExecutor
+from bs4 import BeautifulSoup
+import re
+import time
+import io
 from datetime import datetime
+import concurrent.futures
 
-# --- BULUT (CLOUD) AYARLARI ---
-def get_browser_options():
-    co = ChromiumOptions()
-    co.set_paths(browser_path='/usr/bin/chromium') 
-    co.headless() 
-    co.set_argument('--no-sandbox')
-    co.set_argument('--disable-gpu')
-    co.set_argument('--disable-dev-shm-usage')
-    return co
+# --- SİSTEM AYARLARI ---
+st.set_page_config(page_title="SQUAREXPO Otomasyon V2", layout="wide", page_icon="🚀")
 
-# --- VERİTABANI İŞLEMLERİ ---
+# --- SESSION STATE BAŞLATMA ---
+if 'ana_liste' not in st.session_state:
+    st.session_state['ana_liste'] = []
+if 'fuar_etiketi' not in st.session_state:
+    st.session_state['fuar_etiketi'] = "Genel_Liste"
+
+# --- VERİTABANI FONKSİYONLARI ---
 def tabloyu_hazirla():
     conn = sqlite3.connect('fuar_verileri.db')
     c = conn.cursor()
@@ -39,305 +37,116 @@ def veriyi_kaydet(etiket, firma, web, tel, mail):
 
 def arsivi_getir():
     conn = sqlite3.connect('fuar_verileri.db')
-    try:
-        df = pd.read_sql_query("SELECT * FROM sonuclar", conn)
-    except:
-        df = pd.DataFrame(columns=["fuar_etiketi", "firma_adi", "web_adresi", "telefon", "eposta", "tarih"])
+    df = pd.read_sql_query("SELECT * FROM sonuclar ORDER BY tarih DESC", conn)
     conn.close()
     return df
 
-tabloyu_hazirla()
-
-# --- SİSTEM AYARLARI ---
-SISTEM_ISMI = "Fuar Müşteri Otomasyon Sistemi V1.0"
-FIRMA_1 = "SQUAREXPO"
-FIRMA_2 = "PERGE MİMARLIK"
-
-st.set_page_config(page_title=SISTEM_ISMI, layout="wide", page_icon="🏢")
-
-# --- BANNER ---
-st.markdown(f"""
-    <style>
-    .banner-container {{ background: linear-gradient(90deg, #0F172A 0%, #1E3A8A 100%); padding: 20px; border-radius: 12px; text-align: center; color: white; border-bottom: 4px solid #F59E0B; }}
-    .banner-title {{ font-size: 30px; font-weight: 800; }}
-    </style>
-    <div class="banner-container"><div class="banner-title">{SISTEM_ISMI}</div><div style='color:#F59E0B;'>{FIRMA_1} | {FIRMA_2}</div></div>
-    """, unsafe_allow_html=True)
-
-# --- YARDIMCI FONKSİYONLAR ---
-def veri_ayikla(html):
-    tel = re.findall(r'(?:\+90|0)?\s?\(?\d{3}\)?\s?\d{3}\s?\d{2}\s?\d{2}', html)
-    mail = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
-    c_tel = next((t for t in tel if len(re.sub(r'\D', '', str(t))) >= 10), "Bulunamadı")
-    c_mail = next((m for m in mail if not m.lower().endswith(('.png', '.jpg', '.jpeg', '.svg', '.webp'))), "Bulunamadı")
-    return c_tel, c_mail
-
-def tekli_sorgu(firma, etiket):
-  def tekli_sorgu(firma, etiket):
-    link = "Bulunamadı"
-    t, m = "Bulunamadı", "Bulunamadı"
+# --- AKILLI TARAMA MOTORU (ARKA PLANDA ÇALIŞAN KISIM) ---
+def derin_bilgi_bul(firma_adi):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119.0.0.0'}
+    sonuc = {"web": "Bulunamadı", "tel": "Bulunamadı", "mail": "Bulunamadı"}
     
-    # Gerçek tarayıcı kimlikleri (User-Agent) listesi
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
-        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-    }
-    
+    # Adım 1: Arama Motoru üzerinden siteyi bul (Bing/DuckDuckGo kombinasyonu)
+    arama_sorgusu = f"https://www.bing.com/search?q={firma_adi.replace(' ', '+')}+official+website+contact"
     try:
-        # AŞAMA 1: Arama motorunu atlayıp doğrudan Google'ın 'I'm Feeling Lucky' (Kendimi Şanslı Hissediyorum) mantığını simüle edelim
-        # Bu yöntem doğrudan ilgili firmanın web sitesine yönlendirme linkini yakalamaya çalışır
-        search_url = f"https://www.google.com/search?q={firma}+official+website&btnI=I"
+        response = requests.get(arama_sorgusu, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = [a['href'] for a in soup.find_all('a', href=True) if "http" in a['href']]
         
-        response = requests.get(search_url, headers=headers, timeout=15, allow_redirects=True)
-        link = response.url # Eğer yönlendirme başarılıysa doğrudan site URL'sini alırız
+        for link in links:
+            if not any(x in link for x in ["google", "bing", "facebook", "linkedin", "instagram", "youtube", "twitter"]):
+                sonuc["web"] = link
+                break
         
-        # Eğer hala Google'da kalmışsak (yönlendirme olmadıysa) arama sonuçlarından çekelim
-        if "google.com/search" in link:
-            links = re.findall(r'href="(https?://.*?)"', response.text)
-            for l in links:
-                if "google.com" not in l and "youtube" not in l:
-                    link = l
-                    break
-
-        # AŞAMA 2: Site içeriğine erişim ve veri kazıma
-        if link != "Bulunamadı" and "google.com" not in link:
-            # Sitenin korumasını aşmak için ek parametreler
-            site_r = requests.get(link, headers=headers, timeout=20, verify=False)
-            site_r.encoding = site_r.apparent_encoding # Türkçe karakterler için
-            t, m = veri_ayikla(site_r.text)
+        # Adım 2: Site içine girip "Cımbızla" veri çek (İstediğin Arka Plan Sekme Mantığı)
+        if sonuc["web"] != "Bulunamadı":
+            site_res = requests.get(sonuc["web"], headers=headers, timeout=10)
+            text = site_res.text
             
-        veriyi_kaydet(etiket, firma, link, t, m)
-        return True
-        
-    except Exception:
-        # Eğer hiçbir şey işe yaramazsa en azından firmanın adıyla bir kayıt oluştur
-        veriyi_kaydet(etiket, firma, link, "Erişim Yok", "Erişim Yok")
-        return False
-        # 2. AŞAMA: Bulunan siteye git ve iletişim bilgilerini çek
-        if link != "Bulunamadı":
-            p.get(link)
-            time.sleep(4) # Sayfanın tam yüklenmesi için 4 saniye
-            t, m = veri_ayikla(p.html)
+            # E-posta Yakala
+            mail_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+            if mail_match: sonuc["mail"] = mail_match.group(0)
             
-            # Eğer ana sayfada bulamazsa /contact veya /iletisim sayfasına bakmayı dene
-            if t == "Bulunamadı" and m == "Bulunamadı":
-                contact_link = p.ele('text:iletişim') or p.ele('text:contact') or p.ele('text:İLETİŞİM')
-                if contact_link:
-                    contact_link.click()
-                    time.sleep(3)
-                    t, m = veri_ayikla(p.html)
-        
-        p.quit()
-        veriyi_kaydet(etiket, firma, link, t, m)
-        return True
-        
-    except Exception as e:
-        if p: p.quit()
-        veriyi_kaydet(etiket, firma, link, "Bağlantı Sorunu", "Bağlantı Sorunu")
-        return False
-        # 2. AŞAMA: Siteye Girip Veri Çekme
-        if link != "Bulunamadı":
-            co = get_browser_options()
-            p = WebPage(addr_or_opts=co)
-            p.get(link)
-            time.sleep(3) # Sayfanın iyice açılmasını bekleyelim
-            t, m = veri_ayikla(p.html)
-            p.quit()
-        
-        veriyi_kaydet(etiket, firma, link, t, m)
-        return True
-        
-    except Exception as e:
-        veriyi_kaydet(etiket, firma, link, "Hata", "Hata")
-        return False
-# --- KENAR ÇUBUĞU ---
-st.sidebar.markdown(f"### ⚙️ {FIRMA_1} Kontrol")
-hiz = st.sidebar.slider("Tarama Hızı", 1, 5, 2)
-fuar_etiketi = st.sidebar.text_input("Fuar Etiketi:", "Genel_Liste")
+            # Telefon Yakala
+            tel_match = re.search(r'\+?\d[\d\s-]{8,15}', text)
+            if tel_match: sonuc["tel"] = tel_match.group(0).strip()
+            
+    except:
+        pass
+    return sonuc
 
-if 'ana_liste' not in st.session_state:
-    st.session_state['ana_liste'] = []
+# --- ARAYÜZ ---
+tabloyu_hazirla()
+st.title("🚀 Fuar Müşteri Otomasyonu V2.0")
 
-# --- ANA PANEL ---
-st.subheader("📥 Veri Giriş Kanalları")
-k1, k2, k3, k4 = st.tabs(["🌐 URL", "📄 PDF", "📊 EXCEL", "📂 MANUEL"])
+fuar_etiketi = st.text_input("Fuar Etiketi:", value=st.session_state['fuar_etiketi'])
 
-# --- URL TARAMA MOTORU (k1) ---
-with k1:
-    st.subheader("🌐 Web Sitesinden Veri Çek")
-    url_input = st.text_input("Fuar Katılımcı Listesi URL'si:", placeholder="https://musiadexpo.com/tr/2026-katilimci-firmalar")
-    
-    if st.button("🔍 URL'den Oku"):
-        if url_input:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
-            }
-            try:
-                with st.spinner("MÜSİAD Veritabanına sızılıyor..."):
-                    response = requests.get(url_input, headers=headers, timeout=30, verify=False)
-                    html_content = response.text
-                    
-                    # 1. STRATEJİ: Katılımcı detay linklerini bul (MÜSİAD özel)
-                    # Genellikle 'katilimci-detay' içeren linkler firma isimlerini barındırır
-                    linkler = re.findall(r'href="([^"]*katilimci-detay[^"]*)"', html_content)
-                    
-                    # 2. STRATEJİ: Div class yapılarını tara
-                    div_firmalar = re.findall(r'<div class="text">(.*?)</div>', html_content, re.DOTALL)
-                    
-                    # 3. STRATEJİ: Genel temizleme
-                    toplam_bulunan = []
-                    for ham in linkler + div_firmalar:
-                        # Linkten veya HTML'den ismi ayıkla
-                        isim = ham.split('/')[-1].replace('-', ' ').title() if '/' in ham else ham
-                        isim = re.sub('<.*?>', '', isim).strip() # HTML temizle
-                        if len(isim) > 3 and len(isim) < 60:
-                            toplam_bulunan.append(isim)
-                    
-                    final_liste = list(set(toplam_bulunan)) # Mükerrerleri sil
-                    
-                    if final_liste:
-                        st.session_state['ana_liste'] = final_liste
-                        st.success(f"🚀 Başarı! MÜSİAD listesinden {len(final_liste)} firma cımbızla çekildi.")
-                        st.rerun()
-                    else:
-                        st.error("Site verileri şifreli veya dinamik. Lütfen sayfayı tarayıcıda açıp firma isimlerini kopyalayarak MANUEL sekmesine yapıştırın.")
-            except Exception as e:
-                st.error(f"Bağlantı engellendi: {e}")
+tab_url, tab_pdf, tab_excel, tab_manuel = st.tabs(["🌐 URL Tarama", "📄 PDF Analiz", "📊 Excel Giriş", "📂 Manuel Liste"])
 
-# --- PDF TARAMA MOTORU (k2) ---
-with k2:
-    st.subheader("📄 PDF Katalogtan Veri Çek")
-    pdf_dosya = st.file_uploader("Firma Listesi içeren PDF yükleyin", type=['pdf'])
-    
-    if pdf_dosya:
-        try:
-            with st.spinner("PDF okunuyor..."):
-                import pdfplumber # requirements.txt'ye eklediğinden emin ol
-                with pdfplumber.open(pdf_dosya) as pdf:
-                    tam_metin = ""
-                    for page in pdf.pages:
-                        extracted = page.extract_text()
-                        if extracted:
-                            tam_metin += extracted + "\n"
-                
-                # E-posta adreslerini firma temsilcisi olarak yakalar
-                mailler = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', tam_metin)
-                # Telefon numaralarını yakalar
-                teller = re.findall(r'\+?\d[\d\s-]{8,12}\d', tam_metin)
-                
-                # Basit bir mantıkla satırları firma ismi olarak alır (en az 3 harfli satırlar)
-                satirlar = [s.strip() for s in tam_metin.split('\n') if len(s.strip()) > 3]
-                
-                if satirlar:
-                    st.session_state['ana_liste'] = satirlar[:100] # Çok büyük PDF'ler için ilk 100 satır
-                    st.success(f"✅ PDF içeriği okundu! {len(satirlar)} satır firma havuzuna eklendi.")
-                    st.rerun()
-        except Exception as e:
-            st.error(f"PDF işleme hatası: {e}")
+# 1. URL SEKMESİ (MÜSİAD VB. İÇİN DERİN TARAMA)
+with tab_url:
+    url_input = st.text_input("Hedef URL:")
+    if st.button("URL'den Firma Ayıkla"):
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url_input, headers=headers)
+        # <h3> veya <strong> içindeki her şeyi isim olarak yakalamaya çalışır
+        bulunanlar = list(set(re.findall(r'<(?:h3|strong|b)>(.*?)</(?:h3|strong|b)>', res.text)))
+        st.session_state['ana_liste'] = [re.sub('<.*?>', '', f).strip() for f in bulunanlar if len(f) > 3]
+        st.success(f"{len(st.session_state['ana_liste'])} firma bulundu.")
 
-with k3:
-    excel_dosya = st.file_uploader("Excel Dosyası Yükleyin", type=['xlsx', 'xls'])
-    if excel_dosya:
-        df_excel = pd.read_excel(excel_dosya)
-        st.write("Dosya Önizlemesi:", df_excel.head())
-        kolon = st.selectbox("Firma isimlerinin olduğu kolonu seçin:", df_excel.columns)
-        if st.button("Excel'den Aktar"):
-            st.session_state['ana_liste'] = df_excel[kolon].astype(str).tolist()
-            st.success("Excel Verileri Havuza Alındı!")
+# 4. MANUEL LİSTE (KOPYALA-YAPIŞTIR DESTEĞİ)
+with tab_manuel:
+    manuel_input = st.text_area("Firma İsimlerini Buraya Yapıştırın (Her satıra bir tane):")
+    if st.button("Listeye Ekle"):
+        yeni_firmalar = [f.strip() for f in manuel_input.split('\n') if f.strip()]
+        st.session_state['ana_liste'].extend(yeni_firmalar)
+        st.rerun()
 
-with k4:
-    st.subheader("📝 Manuel Veri Girişi")
-    st.info("Kendi bulduğunuz firma bilgilerini buraya girerek doğrudan tabloya ekleyebilirsiniz.")
-    
-    # Form yapısı verilerin düzenli girilmesini sağlar
-    with st.form("manuel_ekleme_formu", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            m_firma = st.text_input("Firma Adı *")
-            m_web = st.text_input("Web Adresi", value="www.")
-        with col2:
-            m_tel = st.text_input("Telefon")
-            m_mail = st.text_input("E-posta")
-        
-        submit_button = st.form_submit_button("📥 Tabloya Kaydet")
-        
-        if submit_button:
-            if m_firma:
-                # Bot çalıştırmadan doğrudan veritabanına (Kalıcı Arşiv) kaydediyoruz
-                veriyi_kaydet(st.session_state.get('fuar_etiketi', 'Genel_Liste'), m_firma, m_web, m_tel, m_mail)
-                st.success(f"✅ {m_firma} başarıyla arşive eklendi!")
-                st.rerun() 
-            else:
-                st.error("Lütfen firma adını giriniz.")
-
-# --- İŞLEME BÖLÜMÜ (URL & PDF DESTEKLİ) ---
-if st.session_state.get('ana_liste'):
+# --- İŞLEME BÖLÜMÜ (HIZLANDIRILMIŞ PARALEL MOTOR) ---
+if st.session_state['ana_liste']:
     st.divider()
-    st.info(f"📋 Havuzda **{len(st.session_state['ana_liste'])}** firma taranmayı bekliyor.")
+    st.subheader(f"📋 İşlem Havuzu ({len(st.session_state['ana_liste'])} Firma)")
     
-    if st.button("🚀 TARAMAYI VE KAYDI BAŞLAT", use_container_width=True):
-        bar = st.progress(0)
-        toplam = len(st.session_state['ana_liste'])
+    if st.button("⚡ HIZLI TARAMAYI BAŞLAT (PARALEL)", use_container_width=True):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         
-        for i, firma in enumerate(st.session_state['ana_liste']):
-            # Eğer 'firma' bir sözlükse (URL/PDF'den detaylı gelmişse) doğrudan kaydet
-            if isinstance(firma, dict):
-                veriyi_kaydet(
-                    st.session_state.get('fuar_etiketi', 'Genel'),
-                    firma.get('isim', 'Bilinmeyen'),
-                    firma.get('web', 'Bilinmiyor'),
-                    firma.get('tel', 'Bilinmiyor'),
-                    firma.get('mail', 'Bilinmiyor')
-                )
-            else:
-                # Sadece isimse (Manuel liste girişi gibi) eski usül akıllı sorgu yap
-                tekli_sorgu(firma, st.session_state.get('fuar_etiketi', 'Genel'))
+        # AYNI ANDA 5 FİRMAYI TARAR (Hızın anahtarı burada)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_firma = {executor.submit(derin_bilgi_bul, f): f for f in st.session_state['ana_liste']}
             
-            # İlerleme çubuğunu güncelle
-            bar.progress((i + 1) / toplam)
-            st.toast(f"✅ {firma if isinstance(firma, str) else firma.get('isim')} işlendi!")
-            
-        st.success("✨ İşlem başarıyla tamamlandı ve Arşive kaydedildi!")
-        st.session_state['ana_liste'] = [] # Havuzu boşalt
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_firma)):
+                firma = future_to_firma[future]
+                data = future.result()
+                veriyi_kaydet(fuar_etiketi, firma, data["web"], data["tel"], data["mail"])
+                
+                # Arayüzü güncelle
+                progress = (i + 1) / len(st.session_state['ana_liste'])
+                progress_bar.progress(progress)
+                status_text.text(f"İşleniyor: {firma}")
+        
+        st.success("Tüm liste başarıyla arşive işlendi!")
+        st.session_state['ana_liste'] = []
         st.rerun()
 
 # --- ARŞİV VE YÖNETİM ---
 st.divider()
-st.subheader("🗄️ KALICI ARŞİV")
 df_arsiv = arsivi_getir()
+st.subheader("🗄️ Kalıcı Arşiv")
+st.dataframe(df_arsiv, use_container_width=True)
 
-if not df_arsiv.empty:
-    # Tabloyu göster
-    st.dataframe(df_arsiv, use_container_width=True)
-    
-    # Butonlar için yan yana sütunlar oluşturalım
-    col_down, col_settings = st.columns([3, 1])
-    
-    with col_down:
-        # Excel İndirme İşlemi
-        xlsx = io.BytesIO()
-        with pd.ExcelWriter(xlsx, engine='openpyxl') as writer:
-            df_arsiv.to_excel(writer, index=False)
-        
-        st.download_button(
-            label="📥 Arşivi Excel Olarak İndir",
-            data=xlsx.getvalue(),
-            file_name=f"fuar_arsiv_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    
-    with col_settings:
-        # Silme seçeneğini bir açılır menü içine gizleyelim (Kaba durmaması için)
-        with st.expander("⚙️ Yönet"):
-            st.warning("Veriler geri alınamaz!")
-            onay = st.checkbox("Silmeyi onayla")
-            if st.button("🗑️ Arşivi Temizle", type="primary", disabled=not onay):
-                conn = sqlite3.connect('fuar_verileri.db')
-                conn.execute("DELETE FROM sonuclar")
-                conn.commit()
-                conn.close()
-                st.success("Arşiv temizlendi!")
-                st.rerun()
-else:
-    st.info("Henüz kayıtlı veri bulunmuyor. Manuel sekmesinden veri girişi yapabilirsiniz.")
+col_exp, col_clear = st.columns([4,1])
+with col_exp:
+    xlsx = io.BytesIO()
+    with pd.ExcelWriter(xlsx, engine='openpyxl') as writer:
+        df_arsiv.to_excel(writer, index=False)
+    st.download_button("📥 Excel Olarak İndir", data=xlsx.getvalue(), file_name="fuar_liste.xlsx")
+
+with col_clear:
+    with st.expander("Ayarlar"):
+        if st.button("🗑️ Arşivi Sıfırla"):
+            conn = sqlite3.connect('fuar_verileri.db')
+            conn.execute("DELETE FROM sonuclar")
+            conn.commit()
+            conn.close()
+            st.rerun()
