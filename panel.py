@@ -77,18 +77,25 @@ def tekli_sorgu(firma, etiket):
     try:
         co = get_browser_options()
         p = WebPage(addr_or_opts=co)
-        p.get(f'https://www.bing.com/search?q={firma} resmi web sitesi iletişim')
-        time.sleep(1)
-        link = p.ele('tag:h2').ele('tag:a').attr('href')
-        p.get(link)
-        time.sleep(1)
-        t, m = veri_ayikla(p.html)
-        p.quit()
-        veriyi_kaydet(etiket, firma, link, t, m)
-        return True
+        # Daha hızlı ve bot dostu olan DuckDuckGo'ya geçtik
+        p.get(f'https://duckduckgo.com/?q={firma}+official+website+contact')
+        time.sleep(2) # Sayfanın yüklenmesi için biraz süre tanıyalım
+        
+        # İlk çıkan linki daha garantili bir yöntemle alalım
+        link = p.ele('tag:a', arg='class=result__a').attr('href')
+        
+        if link:
+            p.get(link)
+            time.sleep(2)
+            t, m = veri_ayikla(p.html)
+            p.quit()
+            veriyi_kaydet(etiket, firma, link, t, m)
+            return True
+        else:
+            raise Exception("Link bulunamadı")
     except:
         if p: p.quit()
-        veriyi_kaydet(etiket, firma, "Bulunamadı", "Bulunamadı", "Bulunamadı")
+        veriyi_kaydet(etiket, firma, "Bağlantı Hatası", "Bulunamadı", "Bulunamadı")
         return False
 
 # --- KENAR ÇUBUĞU ---
