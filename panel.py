@@ -230,15 +230,42 @@ if st.session_state['ana_liste']:
         st.session_state['ana_liste'] = [] 
         st.rerun()
 
-# --- ARŞİV ---
+# --- ARŞİV VE YÖNETİM ---
 st.divider()
 st.subheader("🗄️ KALICI ARŞİV")
 df_arsiv = arsivi_getir()
+
 if not df_arsiv.empty:
+    # Tabloyu göster
     st.dataframe(df_arsiv, use_container_width=True)
-    xlsx = io.BytesIO()
-    with pd.ExcelWriter(xlsx, engine='openpyxl') as writer:
-        df_arsiv.to_excel(writer, index=False)
-    st.download_button("📥 Arşivi Excel Olarak İndir", xlsx.getvalue(), "fuar_arsiv.xlsx")
+    
+    # Butonlar için yan yana sütunlar oluşturalım
+    col_down, col_settings = st.columns([3, 1])
+    
+    with col_down:
+        # Excel İndirme İşlemi
+        xlsx = io.BytesIO()
+        with pd.ExcelWriter(xlsx, engine='openpyxl') as writer:
+            df_arsiv.to_excel(writer, index=False)
+        
+        st.download_button(
+            label="📥 Arşivi Excel Olarak İndir",
+            data=xlsx.getvalue(),
+            file_name=f"fuar_arsiv_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    with col_settings:
+        # Silme seçeneğini bir açılır menü içine gizleyelim (Kaba durmaması için)
+        with st.expander("⚙️ Yönet"):
+            st.warning("Veriler geri alınamaz!")
+            onay = st.checkbox("Silmeyi onayla")
+            if st.button("🗑️ Arşivi Temizle", type="primary", disabled=not onay):
+                conn = sqlite3.connect('fuar_verileri.db')
+                conn.execute("DELETE FROM sonuclar")
+                conn.commit()
+                conn.close()
+                st.success("Arşiv temizlendi!")
+                st.rerun()
 else:
-    st.info("Henüz kayıtlı veri bulunmuyor. Bir tarama başlatın.")
+    st.info("Henüz kayıtlı veri bulunmuyor. Manuel sekmesinden veri girişi yapabilirsiniz.")
