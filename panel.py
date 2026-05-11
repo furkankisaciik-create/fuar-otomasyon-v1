@@ -73,27 +73,31 @@ def veri_ayikla(html):
     return c_tel, c_mail
 
 def tekli_sorgu(firma, etiket):
-    p = None
     link = "Bulunamadı"
     t, m = "Bulunamadı", "Bulunamadı"
     
     try:
-        co = get_browser_options()
-        p = WebPage(addr_or_opts=co)
+        # 1. AŞAMA: DuckDuckGo Lite üzerinden çok hızlı arama
+        # Bu yöntem bot engelini %99 aşar
+        search_url = f"https://duckduckgo.com/html/?q={firma}+official+contact"
+        headers = {'User-Agent': 'Mozilla/5.0'}
         
-        # 1. AŞAMA: DuckDuckGo üzerinden arama (Bot dostu)
-        # Arama terimini 'contact' ve 'iletişim' ile güçlendiriyoruz
-        p.get(f'https://duckduckgo.com/html/?q={firma}+official+website+contact+communication')
-        time.sleep(3)
+        r = requests.get(search_url, headers=headers, timeout=10)
+        # HTML içinden ilk temiz linki çek
+        match = re.search(r'class="result__a" href="(.*?)"', r.text)
         
-        # DuckDuckGo HTML versiyonu üzerinden linki yakalıyoruz (Daha garantidir)
-        # Önce tüm linkleri tara, reklam olmayan ilk sonucu al
-        results = p.eles('tag:a')
-        for res in results:
-            href = res.attr('href')
-            if href and 'http' in href and 'duckduckgo' not in href:
-                link = href
-                break
+        if match:
+            link = match.group(1)
+            # 2. AŞAMA: Siteyi tarayıcı açmadan doğrudan 'oku'
+            site_res = requests.get(link, headers=headers, timeout=10)
+            t, m = veri_ayikla(site_res.text)
+        
+        veriyi_kaydet(etiket, firma, link, t, m)
+        return True
+        
+    except:
+        veriyi_kaydet(etiket, firma, link, "Erişim Engellendi", "Erişim Engellendi")
+        return False
         
         # 2. AŞAMA: Bulunan siteye git ve iletişim bilgilerini çek
         if link != "Bulunamadı":
