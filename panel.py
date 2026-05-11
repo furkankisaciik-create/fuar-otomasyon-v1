@@ -215,19 +215,35 @@ with k4:
             else:
                 st.error("Lütfen firma adını giriniz.")
 
-# --- İŞLEME BÖLÜMÜ ---
-if st.session_state['ana_liste']:
+# --- İŞLEME BÖLÜMÜ (URL & PDF DESTEKLİ) ---
+if st.session_state.get('ana_liste'):
     st.divider()
     st.info(f"📋 Havuzda **{len(st.session_state['ana_liste'])}** firma taranmayı bekliyor.")
-    if st.button("🚀 TARAMAYI VE KAYDI BAŞLAT"):
+    
+    if st.button("🚀 TARAMAYI VE KAYDI BAŞLAT", use_container_width=True):
         bar = st.progress(0)
         toplam = len(st.session_state['ana_liste'])
+        
         for i, firma in enumerate(st.session_state['ana_liste']):
-            tekli_sorgu(firma, fuar_etiketi)
+            # Eğer 'firma' bir sözlükse (URL/PDF'den detaylı gelmişse) doğrudan kaydet
+            if isinstance(firma, dict):
+                veriyi_kaydet(
+                    st.session_state.get('fuar_etiketi', 'Genel'),
+                    firma.get('isim', 'Bilinmeyen'),
+                    firma.get('web', 'Bilinmiyor'),
+                    firma.get('tel', 'Bilinmiyor'),
+                    firma.get('mail', 'Bilinmiyor')
+                )
+            else:
+                # Sadece isimse (Manuel liste girişi gibi) eski usül akıllı sorgu yap
+                tekli_sorgu(firma, st.session_state.get('fuar_etiketi', 'Genel'))
+            
+            # İlerleme çubuğunu güncelle
             bar.progress((i + 1) / toplam)
-            st.toast(f"{firma} işlendi!")
-        st.success("Tüm liste başarıyla tarandı ve Arşive kaydedildi!")
-        st.session_state['ana_liste'] = [] 
+            st.toast(f"✅ {firma if isinstance(firma, str) else firma.get('isim')} işlendi!")
+            
+        st.success("✨ İşlem başarıyla tamamlandı ve Arşive kaydedildi!")
+        st.session_state['ana_liste'] = [] # Havuzu boşalt
         st.rerun()
 
 # --- ARŞİV VE YÖNETİM ---
