@@ -76,30 +76,36 @@ def tekli_sorgu(firma, etiket):
     link = "Bulunamadı"
     t, m = "Bulunamadı", "Bulunamadı"
     
+    # Sunucuyu gerçek bir insan gibi göstermek için 'User-Agent'ı güçlendirdik
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
+    
     try:
-        # DuckDuckGo Lite üzerinden güvenli arama
-        search_url = f"https://duckduckgo.com/html/?q={firma}+official+contact"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
+        # 1. AŞAMA: Google yerine daha az korumalı olan Bing'in 'Lite' aramasını kullanalım
+        search_url = f"https://www.bing.com/search?q={firma}+official+contact+email"
+        session = requests.Session()
+        r = session.get(search_url, headers=headers, timeout=15)
         
-        # Arama sonuçlarını getir
-        r = requests.get(search_url, headers=headers, timeout=15)
-        # HTML içinden ilk temiz linki çek
-        match = re.search(r'class="result__a" href="(.*?)"', r.text)
+        # HTML içinden ilk linki ayıklama
+        links = re.findall(r'href="(https?://.*?)"', r.text)
+        for l in links:
+            if "bing.com" not in l and "microsoft.com" not in l and "facebook" not in l:
+                link = l
+                break
         
-        if match:
-            link = match.group(1)
-            # Bulunan siteyi doğrudan tara (Tarayıcı açmadan)
-            site_res = requests.get(link, headers=headers, timeout=15)
-            t, m = veri_ayikla(site_res.text)
-        
+        # 2. AŞAMA: Site içeriğini çek ve veriyi ayıkla
+        if link != "Bulunamadı":
+            site_r = session.get(link, headers=headers, timeout=15, verify=False) # SSL hatalarını görmezden gel
+            t, m = veri_ayikla(site_r.text)
+            
         veriyi_kaydet(etiket, firma, link, t, m)
         return True
         
-    except Exception as e:
-        # Hata durumunda kayıt tut
-        veriyi_kaydet(etiket, firma, link, "Erişim Engellendi", "Erişim Engellendi")
+    except Exception:
+        veriyi_kaydet(etiket, firma, link, "Erişim Sınırı", "Erişim Sınırı")
         return False
-        
         # 2. AŞAMA: Bulunan siteye git ve iletişim bilgilerini çek
         if link != "Bulunamadı":
             p.get(link)
