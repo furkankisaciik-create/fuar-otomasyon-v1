@@ -42,7 +42,10 @@ def arsivi_getir():
 
 # --- DERİN TARAMA MOTORU (MİNİ SEKME MANTIĞI) ---
 def derin_bilgi_bul(firma_adi):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    # Botun gerçek bir kullanıcı gibi görünmesi için rastgele bekleme ekleyelim
+    time.sleep(random.uniform(1.5, 3.0)) 
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0'}
+    # ... geri kalan kod aynı ...
     sonuc = {"web": "Bulunamadı", "tel": "Bulunamadı", "mail": "Bulunamadı"}
     
     # Çoklu motor araması (Bing üzerinden hızlı giriş)
