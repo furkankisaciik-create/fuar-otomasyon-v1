@@ -191,11 +191,29 @@ with k3:
             st.success("Excel Verileri Havuza Alındı!")
 
 with k4:
-    manuel_input = st.text_area("Firma İsimlerini Alt Alta Yapıştırın:", height=200, placeholder="Örn:\nApple\nSamsung\nTesla")
-    if st.button("Listeye Ekle", key="manuel_btn"):
-        firmalar = [x.strip() for x in manuel_input.split('\n') if x.strip()]
-        st.session_state['ana_liste'] = firmalar
-        st.success(f"{len(firmalar)} firma listeye eklendi!")
+    st.subheader("📝 Manuel Veri Girişi")
+    st.info("Kendi bulduğunuz firma bilgilerini buraya girerek doğrudan tabloya ekleyebilirsiniz.")
+    
+    # Form yapısı verilerin düzenli girilmesini sağlar
+    with st.form("manuel_ekleme_formu", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            m_firma = st.text_input("Firma Adı *")
+            m_web = st.text_input("Web Adresi", value="www.")
+        with col2:
+            m_tel = st.text_input("Telefon")
+            m_mail = st.text_input("E-posta")
+        
+        submit_button = st.form_submit_button("📥 Tabloya Kaydet")
+        
+        if submit_button:
+            if m_firma:
+                # Bot çalıştırmadan doğrudan veritabanına (Kalıcı Arşiv) kaydediyoruz
+                veriyi_kaydet(st.session_state.get('fuar_etiketi', 'Genel_Liste'), m_firma, m_web, m_tel, m_mail)
+                st.success(f"✅ {m_firma} başarıyla arşive eklendi!")
+                st.rerun() 
+            else:
+                st.error("Lütfen firma adını giriniz.")
 
 # --- İŞLEME BÖLÜMÜ ---
 if st.session_state['ana_liste']:
