@@ -77,25 +77,26 @@ def tekli_sorgu(firma, etiket):
     t, m = "Bulunamadı", "Bulunamadı"
     
     try:
-        # 1. AŞAMA: DuckDuckGo Lite üzerinden çok hızlı arama
-        # Bu yöntem bot engelini %99 aşar
+        # DuckDuckGo Lite üzerinden güvenli arama
         search_url = f"https://duckduckgo.com/html/?q={firma}+official+contact"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
         
-        r = requests.get(search_url, headers=headers, timeout=10)
+        # Arama sonuçlarını getir
+        r = requests.get(search_url, headers=headers, timeout=15)
         # HTML içinden ilk temiz linki çek
         match = re.search(r'class="result__a" href="(.*?)"', r.text)
         
         if match:
             link = match.group(1)
-            # 2. AŞAMA: Siteyi tarayıcı açmadan doğrudan 'oku'
-            site_res = requests.get(link, headers=headers, timeout=10)
+            # Bulunan siteyi doğrudan tara (Tarayıcı açmadan)
+            site_res = requests.get(link, headers=headers, timeout=15)
             t, m = veri_ayikla(site_res.text)
         
         veriyi_kaydet(etiket, firma, link, t, m)
         return True
         
-    except:
+    except Exception as e:
+        # Hata durumunda kayıt tut
         veriyi_kaydet(etiket, firma, link, "Erişim Engellendi", "Erişim Engellendi")
         return False
         
