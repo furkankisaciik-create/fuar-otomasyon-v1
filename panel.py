@@ -73,38 +73,45 @@ def veri_ayikla(html):
     return c_tel, c_mail
 
 def tekli_sorgu(firma, etiket):
+  def tekli_sorgu(firma, etiket):
     link = "Bulunamadı"
     t, m = "Bulunamadı", "Bulunamadı"
     
-    # Sunucuyu gerçek bir insan gibi göstermek için 'User-Agent'ı güçlendirdik
+    # Gerçek tarayıcı kimlikleri (User-Agent) listesi
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
     }
     
     try:
-        # 1. AŞAMA: Google yerine daha az korumalı olan Bing'in 'Lite' aramasını kullanalım
-        search_url = f"https://www.bing.com/search?q={firma}+official+contact+email"
-        session = requests.Session()
-        r = session.get(search_url, headers=headers, timeout=15)
+        # AŞAMA 1: Arama motorunu atlayıp doğrudan Google'ın 'I'm Feeling Lucky' (Kendimi Şanslı Hissediyorum) mantığını simüle edelim
+        # Bu yöntem doğrudan ilgili firmanın web sitesine yönlendirme linkini yakalamaya çalışır
+        search_url = f"https://www.google.com/search?q={firma}+official+website&btnI=I"
         
-        # HTML içinden ilk linki ayıklama
-        links = re.findall(r'href="(https?://.*?)"', r.text)
-        for l in links:
-            if "bing.com" not in l and "microsoft.com" not in l and "facebook" not in l:
-                link = l
-                break
+        response = requests.get(search_url, headers=headers, timeout=15, allow_redirects=True)
+        link = response.url # Eğer yönlendirme başarılıysa doğrudan site URL'sini alırız
         
-        # 2. AŞAMA: Site içeriğini çek ve veriyi ayıkla
-        if link != "Bulunamadı":
-            site_r = session.get(link, headers=headers, timeout=15, verify=False) # SSL hatalarını görmezden gel
+        # Eğer hala Google'da kalmışsak (yönlendirme olmadıysa) arama sonuçlarından çekelim
+        if "google.com/search" in link:
+            links = re.findall(r'href="(https?://.*?)"', response.text)
+            for l in links:
+                if "google.com" not in l and "youtube" not in l:
+                    link = l
+                    break
+
+        # AŞAMA 2: Site içeriğine erişim ve veri kazıma
+        if link != "Bulunamadı" and "google.com" not in link:
+            # Sitenin korumasını aşmak için ek parametreler
+            site_r = requests.get(link, headers=headers, timeout=20, verify=False)
+            site_r.encoding = site_r.apparent_encoding # Türkçe karakterler için
             t, m = veri_ayikla(site_r.text)
             
         veriyi_kaydet(etiket, firma, link, t, m)
         return True
         
     except Exception:
-        veriyi_kaydet(etiket, firma, link, "Erişim Sınırı", "Erişim Sınırı")
+        # Eğer hiçbir şey işe yaramazsa en azından firmanın adıyla bir kayıt oluştur
+        veriyi_kaydet(etiket, firma, link, "Erişim Yok", "Erişim Yok")
         return False
         # 2. AŞAMA: Bulunan siteye git ve iletişim bilgilerini çek
         if link != "Bulunamadı":
