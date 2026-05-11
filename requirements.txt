@@ -1,0 +1,6 @@
+streamlit
+pandas
+DrissionPage
+requests
+PyPDF2
+openpyxl
