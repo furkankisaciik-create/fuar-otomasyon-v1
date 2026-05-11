@@ -13,14 +13,13 @@ from datetime import datetime
 # --- BULUT (CLOUD) AYARLARI ---
 def get_browser_options():
     co = ChromiumOptions()
-    # Streamlit Cloud'da Chromium yolu genellikle buradadır:
     co.set_paths(browser_path='/usr/bin/chromium') 
     co.headless() 
     co.set_argument('--no-sandbox')
     co.set_argument('--disable-gpu')
     co.set_argument('--disable-dev-shm-usage')
-    co.set_argument('--remote-debugging-port=9222')
     return co
+
 # --- VERİTABANI İŞLEMLERİ ---
 def tabloyu_hazirla():
     conn = sqlite3.connect('fuar_verileri.db')
@@ -40,7 +39,10 @@ def veriyi_kaydet(etiket, firma, web, tel, mail):
 
 def arsivi_getir():
     conn = sqlite3.connect('fuar_verileri.db')
-    df = pd.read_sql_query("SELECT * FROM sonuclar", conn)
+    try:
+        df = pd.read_sql_query("SELECT * FROM sonuclar", conn)
+    except:
+        df = pd.DataFrame(columns=["fuar_etiketi", "firma_adi", "web_adresi", "telefon", "eposta", "tarih"])
     conn.close()
     return df
 
@@ -53,7 +55,7 @@ FIRMA_2 = "PERGE MİMARLIK"
 
 st.set_page_config(page_title=SISTEM_ISMI, layout="wide", page_icon="🏢")
 
-# --- BANNER TASARIMI ---
+# --- BANNER ---
 st.markdown(f"""
     <style>
     .banner-container {{ background: linear-gradient(90deg, #0F172A 0%, #1E3A8A 100%); padding: 20px; border-radius: 12px; text-align: center; color: white; border-bottom: 4px solid #F59E0B; }}
@@ -62,6 +64,7 @@ st.markdown(f"""
     <div class="banner-container"><div class="banner-title">{SISTEM_ISMI}</div><div style='color:#F59E0B;'>{FIRMA_1} | {FIRMA_2}</div></div>
     """, unsafe_allow_html=True)
 
+# --- YARDIMCI FONKSİYONLAR ---
 def veri_ayikla(html):
     tel = re.findall(r'(?:\+90|0)?\s?\(?\d{3}\)?\s?\d{3}\s?\d{2}\s?\d{2}', html)
     mail = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
@@ -82,36 +85,60 @@ def tekli_sorgu(firma, etiket):
         t, m = veri_ayikla(p.html)
         p.quit()
         veriyi_kaydet(etiket, firma, link, t, m)
-        return {"Firma": firma, "Web": link, "Tel": t, "Mail": m}
+        return True
     except:
         if p: p.quit()
         veriyi_kaydet(etiket, firma, "Bulunamadı", "Bulunamadı", "Bulunamadı")
-        return {"Firma": firma, "Web": "Bulunamadı", "Tel": "Bulunamadı", "Mail": "Bulunamadı"}
+        return False
 
-# --- ARAYÜZ ---
+# --- KENAR ÇUBUĞU ---
 st.sidebar.markdown(f"### ⚙️ {FIRMA_1} Kontrol")
 hiz = st.sidebar.slider("Tarama Hızı", 1, 5, 2)
 fuar_etiketi = st.sidebar.text_input("Fuar Etiketi:", "Genel_Liste")
 
-if 'ana_liste' not in st.session_state: st.session_state['ana_liste'] = []
+if 'ana_liste' not in st.session_state:
+    st.session_state['ana_liste'] = []
 
+# --- ANA PANEL ---
+st.subheader("📥 Veri Giriş Kanalları")
 k1, k2, k3, k4 = st.tabs(["🌐 URL", "📄 PDF", "📊 EXCEL", "📂 MANUEL"])
 
+with k1:
+    url_input = st.text_input("Web sitesi URL girin:")
+    if st.button("URL'den Oku"):
+        st.toast("URL tarama henüz bu versiyonda aktif değil, Manuel'i deneyin!")
+
 with k4:
-    manuel = st.text_area("İsimleri Yapıştırın:")
-    if st.button("Kaydet"):
-        st.session_state['ana_liste'] = [x.strip() for x in manuel.split('\n') if x.strip()]
-        st.rerun()
+    manuel_input = st.text_area("Firma İsimlerini Alt Alta Yapıştırın:", height=200)
+    if st.button("Listeye Ekle"):
+        firmalar = [x.strip() for x in manuel_input.split('\n') if x.strip()]
+        st.session_state['ana_liste'] = firmalar
+        st.success(f"{len(firmalar)} firma listeye eklendi!")
 
+# --- İŞLEME BUTONU ---
 if st.session_state['ana_liste']:
-    st.info(f"📋 {len(st.session_state['ana_liste'])} firma hazır.")
-    if st.button("🚀 TARAMAYI BAŞLAT"):
-        with ThreadPoolExecutor(max_workers=hiz) as executor:
-            for _ in executor.map(lambda f: tekli_sorgu(f, fuar_etiketi), st.session_state['ana_liste']):
-                st.toast("Veri Kaydedildi!")
+    st.divider()
+    st.info(f"📋 Havuzda {len(st.session_state['ana_liste'])} firma taranmayı bekliyor.")
+    if st.button("🚀 TARAMAYI VE KAYDI BAŞLAT"):
+        bar = st.progress(0)
+        toplam = len(st.session_state['ana_liste'])
+        for i, firma in enumerate(st.session_state['ana_liste']):
+            tekli_sorgu(firma, fuar_etiketi)
+            bar.progress((i + 1) / toplam)
+            st.toast(f"{firma} işlendi!")
+        st.success("Tüm liste başarıyla tarandı ve Arşive kaydedildi!")
+        st.session_state['ana_liste'] = [] # Listeyi temizle
 
+# --- ARŞİV BÖLÜMÜ ---
 st.divider()
 st.subheader("🗄️ KALICI ARŞİV")
-df = arsivi_getir()
-if not df.empty:
-    st.dataframe(df, use_container_width=True)
+df_arsiv = arsivi_getir()
+if not df_arsiv.empty:
+    st.dataframe(df_arsiv, use_container_width=True)
+    # Excel İndirme
+    xlsx = io.BytesIO()
+    with pd.ExcelWriter(xlsx, engine='openpyxl') as writer:
+        df_arsiv.to_excel(writer, index=False)
+    st.download_button("📥 Arşivi Excel Olarak İndir", xlsx.getvalue(), "fuar_arsiv.xlsx")
+else:
+    st.write("Henüz kayıtlı veri bulunmuyor.")
