@@ -106,19 +106,42 @@ k1, k2, k3, k4 = st.tabs(["🌐 URL", "📄 PDF", "📊 EXCEL", "📂 MANUEL"])
 with k1:
     url_input = st.text_input("Web sitesi URL girin:")
     if st.button("URL'den Oku"):
-        st.toast("URL tarama henüz bu versiyonda aktif değil, Manuel'i deneyin!")
+        st.warning("Bu özellik bir sonraki güncellemede aktif olacak.")
+
+with k2:
+    pdf_dosya = st.file_uploader("Firma Listesi içeren PDF yükleyin", type=['pdf'])
+    if pdf_dosya:
+        reader = PdfReader(pdf_dosya)
+        pdf_metin = ""
+        for page in reader.pages:
+            pdf_metin += page.extract_text()
+        # Basit bir mantıkla satırları firma ismi olarak alıyoruz
+        firmalar = [f.strip() for f in pdf_metin.split('\n') if len(f.strip()) > 2]
+        if st.button(f"{len(firmalar)} Firmayı PDF'den Aktar"):
+            st.session_state['ana_liste'] = firmalar
+            st.success("PDF Verileri Havuza Alındı!")
+
+with k3:
+    excel_dosya = st.file_uploader("Excel Dosyası Yükleyin", type=['xlsx', 'xls'])
+    if excel_dosya:
+        df_excel = pd.read_excel(excel_dosya)
+        st.write("Dosya Önizlemesi:", df_excel.head())
+        kolon = st.selectbox("Firma isimlerinin olduğu kolonu seçin:", df_excel.columns)
+        if st.button("Excel'den Aktar"):
+            st.session_state['ana_liste'] = df_excel[kolon].astype(str).tolist()
+            st.success("Excel Verileri Havuza Alındı!")
 
 with k4:
-    manuel_input = st.text_area("Firma İsimlerini Alt Alta Yapıştırın:", height=200)
-    if st.button("Listeye Ekle"):
+    manuel_input = st.text_area("Firma İsimlerini Alt Alta Yapıştırın:", height=200, placeholder="Örn:\nApple\nSamsung\nTesla")
+    if st.button("Listeye Ekle", key="manuel_btn"):
         firmalar = [x.strip() for x in manuel_input.split('\n') if x.strip()]
         st.session_state['ana_liste'] = firmalar
         st.success(f"{len(firmalar)} firma listeye eklendi!")
 
-# --- İŞLEME BUTONU ---
+# --- İŞLEME BÖLÜMÜ ---
 if st.session_state['ana_liste']:
     st.divider()
-    st.info(f"📋 Havuzda {len(st.session_state['ana_liste'])} firma taranmayı bekliyor.")
+    st.info(f"📋 Havuzda **{len(st.session_state['ana_liste'])}** firma taranmayı bekliyor.")
     if st.button("🚀 TARAMAYI VE KAYDI BAŞLAT"):
         bar = st.progress(0)
         toplam = len(st.session_state['ana_liste'])
@@ -127,18 +150,18 @@ if st.session_state['ana_liste']:
             bar.progress((i + 1) / toplam)
             st.toast(f"{firma} işlendi!")
         st.success("Tüm liste başarıyla tarandı ve Arşive kaydedildi!")
-        st.session_state['ana_liste'] = [] # Listeyi temizle
+        st.session_state['ana_liste'] = [] 
+        st.rerun()
 
-# --- ARŞİV BÖLÜMÜ ---
+# --- ARŞİV ---
 st.divider()
 st.subheader("🗄️ KALICI ARŞİV")
 df_arsiv = arsivi_getir()
 if not df_arsiv.empty:
     st.dataframe(df_arsiv, use_container_width=True)
-    # Excel İndirme
     xlsx = io.BytesIO()
     with pd.ExcelWriter(xlsx, engine='openpyxl') as writer:
         df_arsiv.to_excel(writer, index=False)
     st.download_button("📥 Arşivi Excel Olarak İndir", xlsx.getvalue(), "fuar_arsiv.xlsx")
 else:
-    st.write("Henüz kayıtlı veri bulunmuyor.")
+    st.info("Henüz kayıtlı veri bulunmuyor. Bir tarama başlatın.")
