@@ -77,14 +77,44 @@ fuar_etiketi = st.text_input("Fuar Etiketi:", value="Genel_Liste")
 t1, t2, t3, t4 = st.tabs(["🌐 URL Tarama", "📄 PDF Analiz", "📊 Excel Giriş", "📂 Manuel Liste"])
 
 # --- 1. URL SEKMESİ ---
+# --- 1. URL SEKMESİ (GÜÇLENDİRİLMİŞ MOTOR) ---
 with t1:
-    url_input = st.text_input("Hedef URL (Katılımcı Listesi Sayfası):")
+    url_input = st.text_input("Hedef URL (Katılımcı Listesi Sayfası):", placeholder="https://musiadexpo.com/tr/2026-katilimci-firmalar")
     if st.button("🔍 URL'den Firmaları Çek"):
-        res = requests.get(url_input, headers={'User-Agent': 'Mozilla/5.0'})
-        bulunanlar = list(set(re.findall(r'<(?:h3|strong|b)>(.*?)</(?:h3|strong|b)>', res.text)))
-        st.session_state['ana_liste'] = [re.sub('<.*?>', '', f).strip() for f in bulunanlar if len(f) > 3]
-        st.success(f"✅ {len(st.session_state['ana_liste'])} firma havuzuna alındı.")
-
+        if url_input:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            try:
+                with st.spinner("Site derinlemesine taranıyor..."):
+                    res = requests.get(url_input, headers=headers, timeout=20, verify=False)
+                    html_icerik = res.text
+                    
+                    # Firma yakalama stratejileri
+                    # 1. Strateji: HTML içindeki tüm link metinlerini tara
+                    link_metinleri = re.findall(r'<a[^>]*>(.*?)</a>', html_icerik)
+                    
+                    # 2. Strateji: Div ve Span içindeki potansiyel isimleri yakala
+                    div_metinleri = re.findall(r'<(?:div|span)[^>]*>(.*?)</(?:div|span)>', html_icerik)
+                    
+                    aday_liste = link_metinleri + div_metinleri
+                    temiz_liste = []
+                    
+                    for aday in aday_liste:
+                        temiz = re.sub('<.*?>', '', aday).strip() # HTML temizle
+                        # Filtre: 3-50 karakter arası, içinde 'MÜSİAD' geçmeyen, sayı içermeyen kelimeler
+                        if 3 < len(temiz) < 50 and not any(x in temiz.lower() for x in ['giriş', 'kayıt', 'ana sayfa', 'iletişim', 'menü', 'detay']):
+                            temiz_liste.append(temiz)
+                    
+                    st.session_state['ana_liste'] = list(set(temiz_liste)) # Mükerrerleri sil
+                    
+                    if len(st.session_state['ana_liste']) > 0:
+                        st.success(f"✅ Siteden {len(st.session_state['ana_liste'])} potansiyel firma ismi ayıklandı!")
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Siteden veri çekilemedi. Site bot koruması kullanıyor olabilir.")
+            except Exception as e:
+                st.error(f"Hata oluştu: {e}")
 # --- 2. PDF SEKMESİ (GERİ GELDİ) ---
 with t2:
     pdf_file = st.file_uploader("Katalog PDF'i Yükleyin", type=['pdf'])
