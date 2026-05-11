@@ -169,33 +169,41 @@ with k1:
     
     if st.button("🔍 URL'den Oku"):
         if url_input:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+            }
             try:
-                with st.spinner("Site analiz ediliyor..."):
-                    response = requests.get(url_input, headers=headers, timeout=20, verify=False)
-                    response.encoding = response.apparent_encoding
+                with st.spinner("MÜSİAD Veritabanına sızılıyor..."):
+                    response = requests.get(url_input, headers=headers, timeout=30, verify=False)
                     html_content = response.text
                     
-                    # Firma isimlerini yakalamak için yaygın HTML etiketlerini tarar
-                    bulunanlar = re.findall(r'<(?:h3|strong|b|span class="title")>(.*?)</(?:h3|strong|b|span)>', html_content)
+                    # 1. STRATEJİ: Katılımcı detay linklerini bul (MÜSİAD özel)
+                    # Genellikle 'katilimci-detay' içeren linkler firma isimlerini barındırır
+                    linkler = re.findall(r'href="([^"]*katilimci-detay[^"]*)"', html_content)
                     
-                    # Temizlik ve Filtreleme
-                    temiz_liste = []
-                    for isim in bulunanlar:
-                        temiz = re.sub('<.*?>', '', isim).strip()
-                        if len(temiz) > 2 and len(temiz) < 100: # Çok kısa veya çok uzun başlıkları eler
-                            temiz_liste.append(temiz)
+                    # 2. STRATEJİ: Div class yapılarını tara
+                    div_firmalar = re.findall(r'<div class="text">(.*?)</div>', html_content, re.DOTALL)
                     
-                    if temiz_liste:
-                        st.session_state['ana_liste'] = list(set(temiz_liste)) # Tekrarları siler
-                        st.success(f"✅ Sayfada {len(st.session_state['ana_liste'])} potansiyel firma bulundu! Aşağıdaki havuzdan taramayı başlatabilirsiniz.")
+                    # 3. STRATEJİ: Genel temizleme
+                    toplam_bulunan = []
+                    for ham in linkler + div_firmalar:
+                        # Linkten veya HTML'den ismi ayıkla
+                        isim = ham.split('/')[-1].replace('-', ' ').title() if '/' in ham else ham
+                        isim = re.sub('<.*?>', '', isim).strip() # HTML temizle
+                        if len(isim) > 3 and len(isim) < 60:
+                            toplam_bulunan.append(isim)
+                    
+                    final_liste = list(set(toplam_bulunan)) # Mükerrerleri sil
+                    
+                    if final_liste:
+                        st.session_state['ana_liste'] = final_liste
+                        st.success(f"🚀 Başarı! MÜSİAD listesinden {len(final_liste)} firma cımbızla çekildi.")
                         st.rerun()
                     else:
-                        st.warning("Sitede otomatik bir liste bulunamadı. Lütfen URL'yi kontrol edin.")
+                        st.error("Site verileri şifreli veya dinamik. Lütfen sayfayı tarayıcıda açıp firma isimlerini kopyalayarak MANUEL sekmesine yapıştırın.")
             except Exception as e:
-                st.error(f"Bağlantı Hatası: {e}")
-        else:
-            st.warning("Lütfen bir URL girin.")
+                st.error(f"Bağlantı engellendi: {e}")
 
 # --- PDF TARAMA MOTORU (k2) ---
 with k2:
