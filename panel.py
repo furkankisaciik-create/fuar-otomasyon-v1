@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.2"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.3"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -332,7 +332,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.2</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.3</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -2149,10 +2149,7 @@ def firma_adi_sadelestir(firma_adi):
     stop_words = [
         "a.s", "as", "aş", "anonim", "sirketi", "sirket", "limited", "ltd", "sti", "şti",
         "sanayi", "san", "ticaret", "tic", "ve", "ile", "imalat", "ithalat", "ihracat",
-        "pazarlama", "dis", "dıs", "dış", "ic", "iç", "urunleri", "ürünleri",
-        "makine", "insaat", "inşaat", "gida", "gıda", "tarim", "tarım", "teknoloji",
-        "teknolojileri", "metal", "plastik", "tekstil", "otomotiv", "elektrik",
-        "elektronik", "mobilya", "ambalaj", "kimya", "medikal", "promosyon"
+        "pazarlama", "dis", "dıs", "dış", "ic", "iç", "urunleri", "ürünleri"
     ]
 
     text = re.sub(r"[^a-z0-9\s]", " ", text)
@@ -2169,7 +2166,7 @@ def firma_adi_sadelestir(firma_adi):
 
 
 def firma_arama_sorgulari_uret(firma_adi):
-    words = firma_adi_sadelestir(firma_adi)
+    important_words = firma_onemli_kelimeleri(firma_adi)
     original = firma_adi_temizle(firma_adi)
 
     sorgular = []
@@ -2181,22 +2178,31 @@ def firma_arama_sorgulari_uret(firma_adi):
             f'"{original}" resmi web sitesi',
         ])
 
-    if words:
-        marka1 = words[0]
-        marka2 = " ".join(words[:2])
-        marka3 = " ".join(words[:3])
+    if important_words:
+        marka1 = important_words[0]
+        marka2 = " ".join(important_words[:2])
+        marka3 = " ".join(important_words[:3])
 
+        # Öncelik çok kelimeli sorgularda: ABBA TEKNOLOJI gibi
         for q in [marka3, marka2, marka1]:
-            if q and q not in sorgular:
+            if q:
                 sorgular.extend([
-                    f"{q} resmi web sitesi",
-                    f"{q} iletişim",
-                    f"{q} firma",
-                    f"{q} site:com.tr",
-                    f"{q} official website"
+                    f'"{q}" resmi web sitesi',
+                    f'"{q}" iletişim',
+                    f'{q} site:com.tr',
+                    f'{q} official website',
+                    f'{q} firma'
                 ])
 
-    # Tekilleştir
+        # Domain kombinasyon sorgusu
+        if len(important_words) >= 2:
+            combo = important_words[0] + important_words[1]
+            sorgular.extend([
+                f'{combo}',
+                f'{combo} iletişim',
+                f'{combo} web sitesi'
+            ])
+
     final = []
     seen = set()
     for q in sorgular:
@@ -2205,23 +2211,31 @@ def firma_arama_sorgulari_uret(firma_adi):
             seen.add(k)
             final.append(q)
 
-    return final[:12]
+    return final[:14]
 
 
 def domain_adaylari_uret(firma_adi):
-    words = firma_adi_sadelestir(firma_adi)
+    words = firma_onemli_kelimeleri(firma_adi)
 
     aday_kokler = []
 
     if words:
-        aday_kokler.append(words[0])
+        # En doğru adaylar: marka + ayırt edici ikinci kelime
         if len(words) >= 2:
             aday_kokler.append(words[0] + words[1])
             aday_kokler.append(words[0] + "-" + words[1])
         if len(words) >= 3:
             aday_kokler.append(words[0] + words[1] + words[2])
+            aday_kokler.append(words[0] + "-" + words[1] + "-" + words[2])
 
-    # Mükerrer temizle
+        # Sonra tek marka
+        aday_kokler.append(words[0])
+
+        # İlk kelime + diğer sektör/ayırt edici kelimeler
+        for w in words[1:5]:
+            aday_kokler.append(words[0] + w)
+            aday_kokler.append(words[0] + "-" + w)
+
     clean_roots = []
     seen = set()
     for root in aday_kokler:
@@ -2230,7 +2244,8 @@ def domain_adaylari_uret(firma_adi):
             seen.add(root)
             clean_roots.append(root)
 
-    tlds = [".com.tr", ".com", ".net", ".com.tr/iletisim", ".com/iletisim"]
+    # Türkiye için com.tr önce, sonra com
+    tlds = [".com.tr", ".com", ".net", ".com.tr/iletisim", ".com/iletisim", ".com.tr/contact", ".com/contact"]
 
     adaylar = []
     for root in clean_roots:
@@ -2238,7 +2253,7 @@ def domain_adaylari_uret(firma_adi):
             adaylar.append(f"https://www.{root}{tld}")
             adaylar.append(f"https://{root}{tld}")
 
-    return adaylar[:30]
+    return adaylar[:50]
 
 
 def web_sitesi_dogrula(url):
@@ -2339,10 +2354,117 @@ def firma_kelime_seti(firma_adi):
     return set([w for w in words if len(w) >= 3])
 
 
+
+def firma_onemli_kelimeleri(firma_adi):
+    """
+    Domain doğrulamada kullanılır.
+    Şirket unvanlarını atar ama teknoloji/yazılım/makine/gıda gibi ayırt edici kelimeleri korur.
+    """
+    text = firma_adi_temizle(firma_adi)
+    text = turkce_karakter_temizle(text).lower()
+    text = text.replace(" ce tic ", " ve tic ")
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+
+    stop = {
+        "a", "s", "as", "aş", "anonim", "sirket", "sirketi", "limited",
+        "ltd", "sti", "şti", "sanayi", "san", "ticaret", "tic", "ve",
+        "ile", "hizmetleri", "hizmet", "ltdsti", "ltdşti"
+    }
+
+    words = [w for w in text.split() if len(w) >= 3 and w not in stop]
+
+    # Mükerrerleri koruyarak temizle
+    final = []
+    seen = set()
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            final.append(w)
+
+    return final
+
+
+def domain_firma_eslesme_skoru(url, firma_adi, page_text=""):
+    """
+    ABBA örneği gibi kısa marka yanılmalarını engeller.
+    Domain sadece ilk kelimeyi içeriyor ama ikinci/üçüncü ayırt edici kelimeyi içermiyorsa cezalandırır.
+    """
+    domain = domain_al(url)
+    if not domain:
+        return -100
+
+    domain_clean = turkce_karakter_temizle(domain.lower())
+    domain_root = domain_clean.replace("www.", "")
+    domain_root = re.sub(r"\.(com\.tr|com|net|org|tr|co|io|de|it|cn|uk)$", "", domain_root)
+
+    page_low = turkce_karakter_temizle((page_text or "").lower()[:10000])
+    words = firma_onemli_kelimeleri(firma_adi)
+
+    if not words:
+        return 0
+
+    score = 0
+    domain_matches = []
+    text_matches = []
+
+    for w in words:
+        if w in domain_root:
+            domain_matches.append(w)
+            score += 40
+        if w in page_low:
+            text_matches.append(w)
+            score += 8
+
+    # İlk marka kelimesi + ikinci ayırt edici kelime domain içinde beraber geçerse çok güçlü sinyal
+    if len(words) >= 2:
+        first, second = words[0], words[1]
+        if first in domain_root and second in domain_root:
+            score += 65
+
+        # İlk kelime var ama ikinci/üçüncü kelimeden hiçbiri yoksa kısa marka yanılması olabilir
+        other_words = words[1:4]
+        if first in domain_root and not any(w in domain_root for w in other_words):
+            # Domain çok kısa ise daha sert ceza: abba.com gibi
+            if len(domain_root.replace("-", "")) <= len(first) + 2:
+                score -= 55
+            else:
+                score -= 25
+
+    # Domain, ilk iki kelimenin bitişik kombinasyonunu içeriyorsa güçlü sinyal: abbateknoloji
+    if len(words) >= 2:
+        combo = words[0] + words[1]
+        if combo in domain_root.replace("-", ""):
+            score += 90
+
+    # İlk üç kombinasyon
+    if len(words) >= 3:
+        combo3 = words[0] + words[1] + words[2]
+        if combo3 in domain_root.replace("-", ""):
+            score += 50
+
+    # Sayfa içinde tam firma kelimesi/önemli kelime yoğunluğu
+    if len(text_matches) >= 2:
+        score += 20
+    if len(domain_matches) >= 2:
+        score += 35
+
+    # Çok kısa global domainler için güvenlik
+    generic_risk_domains = {
+        "abba.com", "abc.com", "mega.com", "star.com", "best.com", "global.com"
+    }
+    if domain in generic_risk_domains and len(words) >= 2:
+        score -= 80
+
+    return score
+
+
+
 def domain_puanla(url, firma_adi, page_text=""):
     """
     Aday web sitesini firma adına göre puanlar.
-    Amaç: arama sonuçlarındaki yanlış siteleri azaltmak.
+    V5.4:
+    - Tek kelimelik marka yanılmalarını azaltır.
+    - ABBA -> abba.com yerine abbateknoloji.com gibi çok kelimeli eşleşmeleri öne çıkarır.
     """
     try:
         domain = domain_al(url)
@@ -2350,33 +2472,37 @@ def domain_puanla(url, firma_adi, page_text=""):
             return -100
 
         low_domain = turkce_karakter_temizle(domain.lower())
-        low_text = turkce_karakter_temizle((page_text or "").lower()[:8000])
-        words = firma_kelime_seti(firma_adi)
+        low_text = turkce_karakter_temizle((page_text or "").lower()[:10000])
+        words = firma_onemli_kelimeleri(firma_adi)
 
         puan = 0
 
-        # Sosyal/marketplace/wiki vb. zaten blacklistte ama tekrar ceza verelim
         if istenmeyen_link_mi(url):
             return -100
 
-        # Domain içinde marka kelimeleri geçiyorsa güçlü sinyal
-        for w in words:
-            if w in low_domain:
-                puan += 35
-            if w in low_text:
-                puan += 8
+        # Çok kelimeli firma-domain eşleşme skoru
+        puan += domain_firma_eslesme_skoru(url, firma_adi, page_text)
 
         # Türkiye firmaları için com.tr güçlü sinyal
         if domain.endswith(".com.tr"):
-            puan += 20
+            puan += 22
         elif domain.endswith(".com"):
-            puan += 10
+            puan += 8
         elif domain.endswith(".net") or domain.endswith(".org"):
-            puan += 5
+            puan += 4
 
         # İletişim sayfası veya kurumsal sayfa pozitif
         if any(x in url.lower() for x in ["iletisim", "iletişim", "contact", "kurumsal", "about"]):
             puan += 8
+
+        # Domain içinde tek başına sadece ilk kelime varsa dikkatli ol
+        if len(words) >= 2:
+            root = low_domain.replace("www.", "")
+            root = re.sub(r"\.(com\.tr|com|net|org|tr|co|io|de|it|cn|uk)$", "", root)
+            if words[0] in root and not any(w in root for w in words[1:4]):
+                # Sayfa içeriği de ikinci kelimeyi desteklemiyorsa ciddi ceza
+                if not any(w in low_text for w in words[1:4]):
+                    puan -= 45
 
         # Çok uzun, takip parametreli, haber/rehber gibi siteler negatif
         if len(url) > 130:
@@ -3368,6 +3494,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.2
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.3
 </div>
 """, unsafe_allow_html=True)
