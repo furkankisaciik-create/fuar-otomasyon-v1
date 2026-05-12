@@ -335,7 +335,12 @@ def firma_listesi_filtrele(adaylar):
         "kvkk", "terms", "sponsor", "visitor", "exhibitor", "download", "pdf",
         "map", "facebook", "instagram", "linkedin", "youtube", "twitter",
         "language", "english", "turkish", "read more", "show more",
-        "stand", "booth", "hall", "category", "product", "service"
+        "stand", "booth", "hall", "category", "product", "service",
+        "katılımcı", "katilimci", "firmalar", "firma", "sonuç", "sonuc",
+        "saniye", "dakika", "gün", "gun", "saat", "2024", "2025", "2026",
+        "musiad", "müsiad", "musiad expo", "müsiad expo", "arama",
+        "filtre", "tüm", "tum", "liste", "listesi", "loading", "yükleniyor",
+        "yukleniyor", "devam", "geri", "ileri", "previous", "next"
     ]
 
     temiz_liste = []
@@ -354,9 +359,18 @@ def firma_listesi_filtrele(adaylar):
             continue
         if re.search(r"https?://|www\.|@", item_lower):
             continue
-        if re.fullmatch(r"[\d\s\-\+\(\)]+", item):
+        if re.fullmatch(r"[\d\s\-\+\(\):\.]+", item):
+            continue
+        if re.search(r"\b\d+\s*(saniye|dakika|gün|gun|saat|sonuç|sonuc)\b", item_lower):
+            continue
+        if re.search(r"\b\d{1,2}\s*[:.]\s*\d{1,2}\b", item_lower):
             continue
         if not re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]", item):
+            continue
+
+        # Çok kısa ve sadece genel kelimelerden oluşan satırları ele
+        kelime_sayisi = len(item.split())
+        if kelime_sayisi == 1 and len(item) < 5:
             continue
 
         temiz_liste.append(item)
@@ -472,10 +486,10 @@ def firmalari_url_den_cek_playwright(url):
 
     selectorler = [
         "a", "h1", "h2", "h3", "h4", "h5",
-        "div", "span", "p",
         "[class*='exhibitor']", "[class*='company']", "[class*='firma']",
-        "[class*='katilimci']", "[class*='participant']",
-        "[title]", "[data-title]", "[data-name]"
+        "[class*='katilimci']", "[class*='katılımcı']", "[class*='participant']",
+        "[class*='brand']", "[class*='card']", "[class*='name']",
+        "[title]", "[data-title]", "[data-name]", "img[alt]"
     ]
 
     for sel in selectorler:
@@ -495,10 +509,9 @@ def firmalari_url_den_cek_playwright(url):
         except Exception:
             continue
 
-    for line in text.split("\n"):
-        temiz = firma_adi_temizle(line)
-        if temiz:
-            adaylar.append(temiz)
+    # Dikkat: Body text komple alınmıyor.
+    # Çünkü sayaç, menü, süre ve başlıklar firma gibi algılanabiliyor.
+    # Sadece seçici HTML alanlarından gelen adaylar kullanılır.
 
     return firma_listesi_filtrele(adaylar)
 
@@ -1098,3 +1111,4 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
         st.info("Su anda gorunur hata yok.")
 
     st.caption("Ayrica sunucu klasorunde squarexpo_v3.log dosyasi olusur.")
+
