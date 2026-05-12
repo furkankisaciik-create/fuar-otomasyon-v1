@@ -323,6 +323,64 @@ def arsivi_temizle():
     conn.close()
 
 
+
+def firma_gibi_gorunuyor_mu(item):
+    """
+    Sayfadaki her metni firma sanmamak icin sirket unvani benzeri satirlari secer.
+    Ozellikle fuar katilimci listelerinde firma adlari genelde bu kaliplari tasir.
+    """
+    if not item:
+        return False
+
+    text = firma_adi_temizle(item)
+    low = text.lower()
+
+    # Net menü / adres / sayfa / zaman kelimeleri
+    red_flags = [
+        "mah.", "mahalle", "cad.", "cadde", "sok.", "sokak", "no:", "istanbul", "bakırköy",
+        "foto galeri", "genel bakış", "gizlilik", "hazır stant", "medya", "materyal",
+        "ziyaretçi", "ziyaretci", "katılımcı", "katilimci", "başvuru", "basvuru",
+        "saniye", "dakika", "gün", "gun", "saat", "sonuç", "sonuc",
+        "musiad", "müsiad", "fuar", "expo", "web sitesi", "web site",
+        "kvkk", "politika", "form", "bilet", "ulaşım", "ulasim",
+        "program", "etkinlik", "salon", "harita", "iletişim", "iletisim"
+    ]
+
+    if any(x in low for x in red_flags):
+        return False
+
+    if len(text) < 4 or len(text) > 90:
+        return False
+
+    if re.fullmatch(r"[\d\s\-\+\(\):\.]+", text):
+        return False
+
+    if re.search(r"https?://|www\.|@", low):
+        return False
+
+    # Sirket unvani isaretleri
+    company_markers = [
+        " a.ş", " a.s", " aş", " as ", " anonim", " san ", " tic ", " ltd", " şti",
+        " sti", " limited", " şirket", " sirket", " co.", " co ", " inc", " llc",
+        " gmbh", " group", " holding", " endüstri", " endustri", " makina",
+        " tekstil", " gida", " gıda", " plastik", " metal", " inşaat", " insaat",
+        " otomotiv", " medikal", " teknoloji", " elektronik", " mobilya",
+        " ambalaj", " kimya", " enerji", " lojistik", " kozmetik"
+    ]
+
+    if any(m in f" {low} " for m in company_markers):
+        return True
+
+    # Tamamen büyük harfli ve 2+ kelimeli satırlar firma olabilir
+    letters = re.sub(r"[^A-Za-zÇĞİÖŞÜçğıöşü]", "", text)
+    if len(letters) >= 6:
+        upper_ratio = sum(1 for c in letters if c.isupper()) / max(len(letters), 1)
+        if upper_ratio > 0.70 and len(text.split()) >= 2:
+            return True
+
+    return False
+
+
 # ============================================================
 # FIRMA LISTESI FILTRELEME
 # ============================================================
@@ -365,10 +423,11 @@ def firma_listesi_filtrele(adaylar):
             continue
         if re.search(r"\b\d{1,2}\s*[:.]\s*\d{1,2}\b", item_lower):
             continue
+        if re.search(r"\b(mah|mahalle|cad|cadde|sok|sokak|no|adres|address)\b", item_lower):
+            continue
         if not re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]", item):
             continue
 
-        # Çok kısa ve sadece genel kelimelerden oluşan satırları ele
         kelime_sayisi = len(item.split())
         if kelime_sayisi == 1 and len(item) < 5:
             continue
@@ -443,6 +502,13 @@ def firmalari_url_den_cek(url):
         for match in re.findall(pattern, html, flags=re.IGNORECASE):
             adaylar.append(firma_adi_temizle(match))
 
+    # Statik HTML metninde firma unvani gibi gorunen satirlari da al
+    page_text = soup.get_text("\n")
+    for line in page_text.split("\n"):
+        temiz = firma_adi_temizle(line)
+        if firma_gibi_gorunuyor_mu(temiz):
+            adaylar.append(temiz)
+
     return firma_listesi_filtrele(adaylar)
 
 
@@ -509,9 +575,12 @@ def firmalari_url_den_cek_playwright(url):
         except Exception:
             continue
 
-    # Dikkat: Body text komple alınmıyor.
-    # Çünkü sayaç, menü, süre ve başlıklar firma gibi algılanabiliyor.
-    # Sadece seçici HTML alanlarından gelen adaylar kullanılır.
+    # Body text komple firma sayilmaz.
+    # Sadece sirket unvani gibi gorunen satirlar adaylara eklenir.
+    for line in text.split("\n"):
+        temiz = firma_adi_temizle(line)
+        if firma_gibi_gorunuyor_mu(temiz):
+            adaylar.append(temiz)
 
     return firma_listesi_filtrele(adaylar)
 
@@ -1111,4 +1180,3 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
         st.info("Su anda gorunur hata yok.")
 
     st.caption("Ayrica sunucu klasorunde squarexpo_v3.log dosyasi olusur.")
-
