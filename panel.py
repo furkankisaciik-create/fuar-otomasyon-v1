@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.2"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.3"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.2
+            Fuar Müşteri Otomasyonu V2.3
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.2</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.3</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -744,6 +744,101 @@ def verileri_toplu_kaydet(kayitlar):
 
     conn.commit()
     conn.close()
+
+
+
+def arsiv_klasor_ozeti_getir():
+    """
+    Arşivi fuar etiketi / araştırma klasörü gibi özetler.
+    """
+    conn = db_baglan()
+    try:
+        df = pd.read_sql_query("""
+            SELECT 
+                fuar_etiketi,
+                COUNT(*) AS toplam_kayit,
+                SUM(CASE WHEN web_adresi IS NOT NULL AND web_adresi != '' AND web_adresi != 'Bulunamadi' THEN 1 ELSE 0 END) AS web_bulunan,
+                SUM(CASE WHEN eposta IS NOT NULL AND eposta != '' AND eposta != 'Bulunamadi' THEN 1 ELSE 0 END) AS mail_bulunan,
+                SUM(CASE WHEN telefon IS NOT NULL AND telefon != '' AND telefon != 'Bulunamadi' THEN 1 ELSE 0 END) AS telefon_bulunan,
+                SUM(CASE WHEN genel_guven >= 75 THEN 1 ELSE 0 END) AS yuksek_guven,
+                SUM(CASE WHEN genel_guven >= 45 AND genel_guven < 75 THEN 1 ELSE 0 END) AS orta_guven,
+                SUM(CASE WHEN genel_guven < 45 OR genel_guven IS NULL THEN 1 ELSE 0 END) AS dusuk_guven,
+                SUM(CASE WHEN manuel_kontrol = 'Evet' THEN 1 ELSE 0 END) AS manuel_kontrol,
+                MIN(tarih) AS ilk_tarih,
+                MAX(tarih) AS son_tarih
+            FROM sonuclar
+            GROUP BY fuar_etiketi
+            ORDER BY son_tarih DESC
+        """, conn)
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+
+def arsiv_klasor_detay_getir(fuar_etiketi):
+    conn = db_baglan()
+    try:
+        df = pd.read_sql_query("""
+            SELECT 
+                fuar_etiketi,
+                firma_adi,
+                web_adresi,
+                telefon,
+                eposta,
+                kaynak,
+                durum,
+                hata,
+                web_guven,
+                mail_guven,
+                telefon_guven,
+                genel_guven,
+                manuel_kontrol,
+                tarih
+            FROM sonuclar
+            WHERE fuar_etiketi = ?
+            ORDER BY id DESC
+        """, conn, params=(fuar_etiketi,))
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+
+def arsiv_eksikleri_havuza_al(fuar_etiketi, tip="web"):
+    """
+    Seçili arşiv klasöründe eksik veya düşük güvenli firmaları tekrar havuza alır.
+    tip:
+    - web: web bulunamayanlar
+    - mail_tel: mail veya telefon eksik olanlar
+    - dusuk_guven: genel güveni düşük olanlar
+    - manuel: manuel kontrol gerekenler
+    """
+    df = arsiv_klasor_detay_getir(fuar_etiketi)
+    if df.empty:
+        return 0
+
+    if tip == "web":
+        mask = (df["web_adresi"].fillna("").isin(["", "Bulunamadi"]))
+    elif tip == "mail_tel":
+        mask = (
+            df["eposta"].fillna("").isin(["", "Bulunamadi"]) |
+            df["telefon"].fillna("").isin(["", "Bulunamadi"])
+        )
+    elif tip == "dusuk_guven":
+        mask = (pd.to_numeric(df["genel_guven"], errors="coerce").fillna(0) < 45)
+    elif tip == "manuel":
+        mask = (df["manuel_kontrol"].fillna("") == "Evet")
+    else:
+        mask = (df["web_adresi"].fillna("").isin(["", "Bulunamadi"]))
+
+    firmalar = df.loc[mask, "firma_adi"].dropna().astype(str).tolist()
+    firmalar = kaynak_firmalarini_normalize_et(firmalar)
+
+    mevcut = st.session_state.get("ana_liste", [])
+    st.session_state["ana_liste"] = kaynak_firmalarini_normalize_et(mevcut + firmalar)
+    return len(firmalar)
+
 
 
 def arsivi_getir():
@@ -3072,7 +3167,7 @@ def websitesinden_iletisim_bul(web_url):
 
 
 # ============================================================
-# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.2
+# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.3
 # ============================================================
 
 def guvenli_int(v, default=0):
@@ -3316,7 +3411,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.2
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.3
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -3846,7 +3941,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.2.
+    PDF firma çıkarma motoru V2.3.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -3893,7 +3988,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.2.
+    Excel firma çıkarma motoru V2.3.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -4425,47 +4520,115 @@ else:
 # ============================================================
 
 st.divider()
-st.subheader("🗄️ Kalici Arsiv")
+st.subheader("🗄️ Araştırma Klasörleri / Kalıcı Arşiv")
 
-df_arsiv = arsivi_getir()
+st.caption("Her fuar etiketi ayrı bir araştırma klasörü gibi gösterilir. Buradan tamamlanan işleri, eksikleri ve manuel kontrol gerekenleri görebilirsin.")
 
-if not df_arsiv.empty:
-    filtre_fuar = st.text_input("Arsiv icinde ara", placeholder="Firma adi, mail, web sitesi veya fuar etiketi yazin")
+df_klasorler = arsiv_klasor_ozeti_getir()
 
-    df_goster = df_arsiv.copy()
+if not df_klasorler.empty:
+    # Oran kolonları
+    df_klasorler_goster = df_klasorler.copy()
+    for col in ["toplam_kayit", "web_bulunan", "mail_bulunan", "telefon_bulunan", "yuksek_guven", "orta_guven", "dusuk_guven", "manuel_kontrol"]:
+        if col in df_klasorler_goster.columns:
+            df_klasorler_goster[col] = pd.to_numeric(df_klasorler_goster[col], errors="coerce").fillna(0).astype(int)
 
-    if filtre_fuar.strip():
-        aranan = filtre_fuar.lower().strip()
-        mask = df_goster.astype(str).apply(lambda col: col.str.lower().str.contains(aranan, na=False)).any(axis=1)
-        df_goster = df_goster[mask]
+    df_klasorler_goster["web_orani"] = ((df_klasorler_goster["web_bulunan"] / df_klasorler_goster["toplam_kayit"]) * 100).round(1)
+    df_klasorler_goster["mail_orani"] = ((df_klasorler_goster["mail_bulunan"] / df_klasorler_goster["toplam_kayit"]) * 100).round(1)
+    df_klasorler_goster["telefon_orani"] = ((df_klasorler_goster["telefon_bulunan"] / df_klasorler_goster["toplam_kayit"]) * 100).round(1)
 
-    st.dataframe(df_goster, use_container_width=True, height=420)
+    st.dataframe(
+        df_klasorler_goster,
+        use_container_width=True,
+        height=260
+    )
 
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_goster.to_excel(writer, index=False, sheet_name="Fuar Listesi")
+    klasor_listesi = df_klasorler["fuar_etiketi"].dropna().astype(str).tolist()
+    secili_klasor = st.selectbox("📁 İncelenecek araştırma klasörü", klasor_listesi)
 
-    c1, c2, c3 = st.columns([1, 1, 3])
+    df_detay = arsiv_klasor_detay_getir(secili_klasor)
 
-    with c1:
+    if not df_detay.empty:
+        toplam = len(df_detay)
+        web_bulunan = int(((df_detay["web_adresi"].fillna("") != "") & (df_detay["web_adresi"].fillna("") != "Bulunamadi")).sum())
+        mail_bulunan = int(((df_detay["eposta"].fillna("") != "") & (df_detay["eposta"].fillna("") != "Bulunamadi")).sum())
+        tel_bulunan = int(((df_detay["telefon"].fillna("") != "") & (df_detay["telefon"].fillna("") != "Bulunamadi")).sum())
+        manuel = int((df_detay["manuel_kontrol"].fillna("") == "Evet").sum()) if "manuel_kontrol" in df_detay.columns else 0
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Toplam Firma", toplam)
+        c2.metric("Web Bulunan", web_bulunan)
+        c3.metric("Mail Bulunan", mail_bulunan)
+        c4.metric("Telefon Bulunan", tel_bulunan)
+        c5.metric("Manuel Kontrol", manuel)
+
+        st.markdown("### 📌 Klasör Detayı")
+
+        filtre = st.selectbox(
+            "Filtre",
+            ["Tümü", "Web bulunamayanlar", "Mail/telefon eksik", "Düşük güven", "Manuel kontrol gerekenler"],
+            index=0
+        )
+
+        df_goster = df_detay.copy()
+
+        if filtre == "Web bulunamayanlar":
+            df_goster = df_goster[df_goster["web_adresi"].fillna("").isin(["", "Bulunamadi"])]
+        elif filtre == "Mail/telefon eksik":
+            df_goster = df_goster[
+                df_goster["eposta"].fillna("").isin(["", "Bulunamadi"]) |
+                df_goster["telefon"].fillna("").isin(["", "Bulunamadi"])
+            ]
+        elif filtre == "Düşük güven":
+            df_goster = df_goster[pd.to_numeric(df_goster["genel_guven"], errors="coerce").fillna(0) < 45]
+        elif filtre == "Manuel kontrol gerekenler":
+            df_goster = df_goster[df_goster["manuel_kontrol"].fillna("") == "Evet"]
+
+        st.dataframe(df_goster, use_container_width=True, height=420)
+
+        st.markdown("### 🔁 Eksikleri Tekrar Havuza Al")
+
+        b1, b2, b3, b4 = st.columns(4)
+
+        with b1:
+            if st.button("Web bulunamayanları tekrar tara", use_container_width=True):
+                adet = arsiv_eksikleri_havuza_al(secili_klasor, "web")
+                st.success(f"{adet} firma tekrar işlem havuzuna alındı.")
+                st.rerun()
+
+        with b2:
+            if st.button("Mail/telefon eksikleri tekrar tara", use_container_width=True):
+                adet = arsiv_eksikleri_havuza_al(secili_klasor, "mail_tel")
+                st.success(f"{adet} firma tekrar işlem havuzuna alındı.")
+                st.rerun()
+
+        with b3:
+            if st.button("Düşük güvenlileri tekrar tara", use_container_width=True):
+                adet = arsiv_eksikleri_havuza_al(secili_klasor, "dusuk_guven")
+                st.success(f"{adet} firma tekrar işlem havuzuna alındı.")
+                st.rerun()
+
+        with b4:
+            if st.button("Manuel kontrol gerekenleri havuza al", use_container_width=True):
+                adet = arsiv_eksikleri_havuza_al(secili_klasor, "manuel")
+                st.success(f"{adet} firma tekrar işlem havuzuna alındı.")
+                st.rerun()
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df_goster.to_excel(writer, index=False, sheet_name="Arsiv Detay")
+
         st.download_button(
-            label="📥 Arsivi Excel Indir",
+            label="📥 Seçili klasörü Excel indir",
             data=output.getvalue(),
-            file_name=f"{fuar_etiketi}_fuar_liste.xlsx",
+            file_name=f"{secili_klasor}_arsiv_detay.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
 
-    with c2:
-        with st.expander("🗑️ Arsiv Temizle"):
-            st.warning("Bu islem tum arsivi siler.")
-            if st.button("Evet, Tum Arsivi Sil"):
-                arsivi_temizle()
-                st.success("Arsiv temizlendi.")
-                st.rerun()
-
 else:
-    st.info("Arsiv henuz bos.")
+    st.info("Henüz arşiv klasörü oluşmadı. Bir araştırma çalıştırıp sonuçları kaydettiğinde burada görünecek.")
+
 
 
 # ============================================================
@@ -4484,6 +4647,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.2
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.3
 </div>
 """, unsafe_allow_html=True)
