@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.0"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.1"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -332,7 +332,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.0</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.1</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -1687,21 +1687,261 @@ def playwright_arama_linkleri_bul(query):
 
 
 
+
+def firma_kelime_seti(firma_adi):
+    words = firma_adi_sadelestir(firma_adi)
+    return set([w for w in words if len(w) >= 3])
+
+
+def domain_puanla(url, firma_adi, page_text=""):
+    """
+    Aday web sitesini firma adına göre puanlar.
+    Amaç: arama sonuçlarındaki yanlış siteleri azaltmak.
+    """
+    try:
+        domain = domain_al(url)
+        if not domain:
+            return -100
+
+        low_domain = turkce_karakter_temizle(domain.lower())
+        low_text = turkce_karakter_temizle((page_text or "").lower()[:8000])
+        words = firma_kelime_seti(firma_adi)
+
+        puan = 0
+
+        # Sosyal/marketplace/wiki vb. zaten blacklistte ama tekrar ceza verelim
+        if istenmeyen_link_mi(url):
+            return -100
+
+        # Domain içinde marka kelimeleri geçiyorsa güçlü sinyal
+        for w in words:
+            if w in low_domain:
+                puan += 35
+            if w in low_text:
+                puan += 8
+
+        # Türkiye firmaları için com.tr güçlü sinyal
+        if domain.endswith(".com.tr"):
+            puan += 20
+        elif domain.endswith(".com"):
+            puan += 10
+        elif domain.endswith(".net") or domain.endswith(".org"):
+            puan += 5
+
+        # İletişim sayfası veya kurumsal sayfa pozitif
+        if any(x in url.lower() for x in ["iletisim", "iletişim", "contact", "kurumsal", "about"]):
+            puan += 8
+
+        # Çok uzun, takip parametreli, haber/rehber gibi siteler negatif
+        if len(url) > 130:
+            puan -= 8
+        if any(x in url.lower() for x in ["haber", "news", "firma-rehberi", "yellow", "rehber", "directory", "blog"]):
+            puan -= 18
+
+        # Sayfa içinde iletişim sinyalleri
+        if any(x in low_text for x in ["iletisim", "iletişim", "contact", "e-posta", "email", "telefon"]):
+            puan += 10
+
+        return puan
+
+    except Exception:
+        return -100
+
+
+def aday_site_oku_ve_puanla(url, firma_adi):
+    """
+    Aday siteyi hızlı okur, parking/boş sayfa değilse puan döner.
+    """
+    try:
+        if not url_gecerli_mi(url):
+            return {"url": url, "puan": -100, "text": ""}
+
+        r = guvenli_get(url, timeout=8, referer="https://www.google.com/")
+        if r.status_code >= 400:
+            return {"url": url, "puan": -50, "text": ""}
+
+        html = r.text or ""
+        text = temiz_metin(html)
+
+        bad = [
+            "domain is for sale", "buy this domain", "parked domain",
+            "this domain may be for sale", "sedo.com", "godaddy"
+        ]
+        if any(b in html.lower() for b in bad):
+            return {"url": url, "puan": -100, "text": text}
+
+        puan = domain_puanla(url, firma_adi, text)
+        return {"url": url, "puan": puan, "text": text}
+
+    except Exception:
+        return {"url": url, "puan": -30, "text": ""}
+
+
+def en_iyi_websitesini_sec(linkler, firma_adi):
+    """
+    Link listesinden en doğru web sitesini seçer.
+    """
+    if not linkler:
+        return ""
+
+    # Domain tekilleştir
+    temiz = []
+    seen = set()
+    for link in linkler:
+        link = normalize_url(link)
+        if not url_gecerli_mi(link):
+            continue
+        if istenmeyen_link_mi(link):
+            continue
+        d = domain_al(link)
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        temiz.append(link)
+
+    if not temiz:
+        return ""
+
+    sonuclar = []
+    # İlk 8 adayı kontrol et; fazla kontrol yavaşlatır
+    for link in temiz[:8]:
+        sonuclar.append(aday_site_oku_ve_puanla(link, firma_adi))
+
+    sonuclar = sorted(sonuclar, key=lambda x: x["puan"], reverse=True)
+
+    if sonuclar and sonuclar[0]["puan"] >= 15:
+        return sonuclar[0]["url"]
+
+    # Puan düşükse yine de en iyi com.tr/com adayını döndür
+    for s in sonuclar:
+        d = domain_al(s["url"])
+        if d.endswith(".com.tr") and s["puan"] >= 5:
+            return s["url"]
+
+    if sonuclar and sonuclar[0]["puan"] > 0:
+        return sonuclar[0]["url"]
+
+    return ""
+
+
+def metinden_obfuscated_email_temizle(text):
+    """
+    info [at] domain [dot] com gibi yazılmış e-postaları yakalamaya çalışır.
+    """
+    if not text:
+        return ""
+
+    t = text
+    t = re.sub(r"\s*\[\s*at\s*\]\s*", "@", t, flags=re.I)
+    t = re.sub(r"\s*\(\s*at\s*\)\s*", "@", t, flags=re.I)
+    t = re.sub(r"\s+at\s+", "@", t, flags=re.I)
+    t = re.sub(r"\s*\[\s*dot\s*\]\s*", ".", t, flags=re.I)
+    t = re.sub(r"\s*\(\s*dot\s*\)\s*", ".", t, flags=re.I)
+    t = re.sub(r"\s+dot\s+", ".", t, flags=re.I)
+    return t
+
+
+def mailto_ve_tel_linklerini_ayikla(html):
+    mailler = []
+    telefonlar = []
+
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = a.get("href", "").strip()
+
+            if href.lower().startswith("mailto:"):
+                mail = href.split(":", 1)[1].split("?")[0].strip()
+                if mail:
+                    mailler.append(mail)
+
+            if href.lower().startswith("tel:"):
+                tel = href.split(":", 1)[1].strip()
+                if tel:
+                    telefonlar.append(tel)
+
+    except Exception:
+        pass
+
+    return mailler, telefonlar
+
+
+def temiz_mail_listesi(mailler):
+    final = []
+    yasakli = [
+        "example.com", "domain.com", "email.com", "sentry.", "wixpress.",
+        "schema.org", "wordpress.org", "yoursite", "yourdomain"
+    ]
+
+    for m in mailler:
+        m = str(m).strip().lower()
+        m = m.replace("mailto:", "").split("?")[0]
+        m = re.sub(r"^[^a-z0-9]+|[^a-z0-9.]+$", "", m)
+
+        if not re.fullmatch(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", m):
+            continue
+        if any(y in m for y in yasakli):
+            continue
+        if m not in final:
+            final.append(m)
+
+    # İşe yarar mailler öne gelsin
+    oncelik = ["info@", "sales@", "export@", "contact@", "iletisim@", "muhasebe@", "marketing@"]
+    final = sorted(final, key=lambda x: 0 if any(x.startswith(o) for o in oncelik) else 1)
+
+    return final[:8]
+
+
+def temiz_telefon_listesi(telefonlar):
+    final = []
+
+    for tel in telefonlar:
+        tel = str(tel).strip()
+        tel = tel.replace("tel:", "")
+        tel = re.sub(r"\s+", " ", tel)
+        rakam = re.sub(r"\D", "", tel)
+
+        if len(rakam) < 10 or len(rakam) > 15:
+            continue
+
+        # Çok tekrar eden saçma numaraları ele
+        if len(set(rakam)) <= 2:
+            continue
+
+        if tel not in final:
+            final.append(tel)
+
+    return final[:8]
+
+
+def iletisim_linki_oncelik_puani(url):
+    low = url.lower()
+    puan = 0
+    if "iletisim" in low or "iletişim" in low:
+        puan += 50
+    if "contact" in low:
+        puan += 45
+    if "bize-ulasin" in low or "bize-ulaşın" in low:
+        puan += 40
+    if "kurumsal" in low or "about" in low:
+        puan += 15
+    return puan
+
+
 def firma_websitesi_bul(firma_adi):
     """
     Firma adından resmi web sitesini bulmaya çalışır.
-    V4.5:
-    - Firma adını sadeleştirir.
-    - Marka köküyle arama yapar.
-    - Bing / DuckDuckGo sonuçlarını çözer.
-    - Son çare domain tahmini yapar.
+    V5.0:
+    - Arama sorgularını sade firma kökleriyle üretir.
+    - Bing/DuckDuckGo linklerini çözer.
+    - Aday web sitelerini firma adıyla puanlar.
+    - En doğru domaini seçmeye çalışır.
     """
     firma_adi_temiz = firma_adi_temizle(firma_adi)
     sorgular = firma_arama_sorgulari_uret(firma_adi_temiz)[:SEARCH_QUERY_LIMIT]
 
     bulunan_linkler = []
 
-    # 1) Requests ile Bing + DuckDuckGo araması
     for sorgu_text in sorgular:
         arama_url_listesi = [
             f"https://www.bing.com/search?q={quote_plus(sorgu_text)}",
@@ -1710,7 +1950,7 @@ def firma_websitesi_bul(firma_adi):
 
         for arama_url in arama_url_listesi:
             try:
-                time.sleep(random.uniform(0.8, 1.8))
+                time.sleep(random.uniform(0.5, 1.1))
                 res = guvenli_get(arama_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
 
                 if res.status_code >= 400:
@@ -1725,15 +1965,9 @@ def firma_websitesi_bul(firma_adi):
 
                     if not url_gecerli_mi(href):
                         continue
-
                     if istenmeyen_link_mi(href):
                         continue
-
                     if any(href.lower().endswith(ext) for ext in [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".doc", ".docx", ".xls", ".xlsx"]):
-                        continue
-
-                    domain = domain_al(href)
-                    if not domain or len(domain) < 4:
                         continue
 
                     bulunan_linkler.append(href)
@@ -1742,34 +1976,33 @@ def firma_websitesi_bul(firma_adi):
                 logging.warning(f"Arama hatasi: {firma_adi_temiz} - {str(e)}")
                 continue
 
-        # İlk sorgularda iyi sonuç varsa fazla bekleme
-        if bulunan_linkler:
+        # İlk 2 sorgudan yeterli aday çıktıysa seçime geç
+        if len(set([domain_al(x) for x in bulunan_linkler if domain_al(x)])) >= 4:
             break
 
-    # 2) Requests sonuç vermezse Playwright DuckDuckGo araması
+    # Requests sonuç vermezse Playwright fallback sadece derin modda çalışır
     if not bulunan_linkler and PLAYWRIGHT_FALLBACK_ENABLED:
         for sorgu_text in sorgular[:max(1, min(3, SEARCH_QUERY_LIMIT))]:
             bulunan_linkler.extend(playwright_arama_linkleri_bul(sorgu_text))
             if bulunan_linkler:
                 break
 
-    # 3) Linkleri domain bazlı tekilleştir
-    temiz_linkler = []
-    gorulen_domain = set()
+    secilen = en_iyi_websitesini_sec(bulunan_linkler, firma_adi_temiz)
+    if secilen:
+        return secilen
 
-    for link in bulunan_linkler:
-        d = domain_al(link)
-        if d and d not in gorulen_domain:
-            gorulen_domain.add(d)
-            temiz_linkler.append(link)
+    # Son çare domain tahmini
+    domain_adaylari = domain_adaylari_uret(firma_adi_temiz)
+    dogrulanan = []
 
-    if temiz_linkler:
-        return temiz_linkler[0]
+    for aday in domain_adaylari[:20]:
+        sonuc = aday_site_oku_ve_puanla(aday, firma_adi_temiz)
+        if sonuc["puan"] >= 8:
+            dogrulanan.append(sonuc)
 
-    # 4) Son çare: domain tahmini
-    for aday in domain_adaylari_uret(firma_adi_temiz):
-        if web_sitesi_dogrula(aday):
-            return aday
+    if dogrulanan:
+        dogrulanan = sorted(dogrulanan, key=lambda x: x["puan"], reverse=True)
+        return dogrulanan[0]["url"]
 
     return ""
 
@@ -1778,75 +2011,72 @@ def eposta_ayikla(text):
     if not text:
         return []
 
+    text = metinden_obfuscated_email_temizle(text)
+
     mailler = re.findall(
         r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
         text
     )
 
-    filtreli = []
-    yasakli = ["example.com", "domain.com", "email.com", "sentry.", "wixpress.", "schema.org"]
-
-    for m in mailler:
-        m = m.strip().lower()
-        if any(y in m for y in yasakli):
-            continue
-        if m not in filtreli:
-            filtreli.append(m)
-
-    return filtreli[:5]
+    return temiz_mail_listesi(mailler)
 
 
 def telefon_ayikla(text):
     if not text:
         return []
 
+    text = text.replace("&nbsp;", " ")
+
     patternler = [
-        r"\+90[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}",
-        r"0[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}",
-        r"\+\d{1,3}[\s\-]?\(?\d{2,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{2,4}[\s\-]?\d{2,4}",
+        r"\+90[\s\-\.]?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{2}[\s\-\.]?\d{2}",
+        r"0[\s\-\.]?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{2}[\s\-\.]?\d{2}",
+        r"\+\d{1,3}[\s\-\.]?\(?\d{2,4}\)?[\s\-\.]?\d{3,4}[\s\-\.]?\d{2,4}[\s\-\.]?\d{2,4}",
+        r"\(\d{3}\)\s*\d{3}[\s\-\.]?\d{2}[\s\-\.]?\d{2}",
     ]
 
     telefonlar = []
     for p in patternler:
         telefonlar.extend(re.findall(p, text))
 
-    temiz = []
-
-    for tel in telefonlar:
-        tel = re.sub(r"\s+", " ", tel).strip()
-        rakam = re.sub(r"\D", "", tel)
-        if 10 <= len(rakam) <= 15:
-            if tel not in temiz:
-                temiz.append(tel)
-
-    return temiz[:5]
+    return temiz_telefon_listesi(telefonlar)
 
 
 def iletisim_sayfasi_linkleri_bul(base_url, html):
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html or "", "html.parser")
     adaylar = []
 
     anahtarlar = [
         "contact", "contact-us", "contacts", "iletisim", "iletişim",
-        "bize-ulasin", "bize-ulaşın", "kurumsal", "about", "about-us"
+        "bize-ulasin", "bize-ulaşın", "kurumsal", "about", "about-us",
+        "communication", "reach-us", "support"
     ]
 
     for a in soup.find_all("a", href=True):
         text = temiz_metin(a.get_text(" ")).lower()
-        href = a.get("href", "").lower()
+        href_raw = a.get("href", "")
+        href = href_raw.lower()
 
         if any(k in text or k in href for k in anahtarlar):
-            full = normalize_url(a.get("href"), base_url=base_url)
+            full = normalize_url(href_raw, base_url=base_url)
             if url_gecerli_mi(full):
                 adaylar.append(full)
 
-    adaylar = list(dict.fromkeys(adaylar))
-    adaylar = sorted(
-        adaylar,
-        key=lambda x: 0 if any(k in x.lower() for k in ["contact", "iletisim", "iletişim"]) else 1
-    )
+    # Standart olası iletişim URL'lerini de dene
+    standart_yollar = [
+        "/iletisim", "/iletişim", "/contact", "/contact-us",
+        "/kurumsal", "/hakkimizda", "/hakkımızda", "/about", "/about-us"
+    ]
 
-    return adaylar[:4]
+    parsed = urlparse(base_url)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+
+    for yol in standart_yollar:
+        adaylar.append(root + yol)
+
+    adaylar = list(dict.fromkeys(adaylar))
+    adaylar = sorted(adaylar, key=iletisim_linki_oncelik_puani, reverse=True)
+
+    return adaylar[:8]
 
 
 def websitesinden_iletisim_bul(web_url):
@@ -1866,43 +2096,62 @@ def websitesinden_iletisim_bul(web_url):
     web_url = normalize_url(web_url)
 
     try:
-        time.sleep(random.uniform(0.8, 1.8))
+        time.sleep(random.uniform(0.4, 1.0))
         res = guvenli_get(web_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
         html = res.text or ""
         text = temiz_metin(html)
 
-        mailler = eposta_ayikla(html + " " + text)
-        telefonlar = telefon_ayikla(html + " " + text)
+        mailto_mailler, tel_linkleri = mailto_ve_tel_linklerini_ayikla(html)
+
+        mailler = []
+        telefonlar = []
+
+        mailler.extend(mailto_mailler)
+        mailler.extend(eposta_ayikla(html + " " + text))
+
+        telefonlar.extend(tel_linkleri)
+        telefonlar.extend(telefon_ayikla(html + " " + text))
 
         kaynak = web_url
 
-        if not mailler or not telefonlar:
+        # Ana sayfada eksik varsa iletişim/kurumsal sayfaları tara
+        if not temiz_mail_listesi(mailler) or not temiz_telefon_listesi(telefonlar):
             for contact_url in iletisim_sayfasi_linkleri_bul(web_url, html):
                 try:
-                    time.sleep(random.uniform(0.6, 1.4))
+                    time.sleep(random.uniform(0.3, 0.9))
                     c_res = guvenli_get(contact_url, timeout=REQUEST_TIMEOUT, referer=web_url)
+
+                    if c_res.status_code >= 400:
+                        continue
+
                     c_html = c_res.text or ""
                     c_text = temiz_metin(c_html)
 
-                    if not mailler:
-                        mailler = eposta_ayikla(c_html + " " + c_text)
-                    if not telefonlar:
-                        telefonlar = telefon_ayikla(c_html + " " + c_text)
+                    c_mailto, c_tel_links = mailto_ve_tel_linklerini_ayikla(c_html)
 
-                    if mailler or telefonlar:
+                    mailler.extend(c_mailto)
+                    mailler.extend(eposta_ayikla(c_html + " " + c_text))
+
+                    telefonlar.extend(c_tel_links)
+                    telefonlar.extend(telefon_ayikla(c_html + " " + c_text))
+
+                    if temiz_mail_listesi(mailler) or temiz_telefon_listesi(telefonlar):
                         kaynak = contact_url
 
-                    if mailler and telefonlar:
+                    if temiz_mail_listesi(mailler) and temiz_telefon_listesi(telefonlar):
                         break
 
                 except Exception as e:
                     logging.warning(f"Iletisim sayfasi okunamadi: {contact_url} - {str(e)}")
                     continue
 
-        if mailler:
-            sonuc["eposta"] = ", ".join(mailler)
-        if telefonlar:
-            sonuc["telefon"] = ", ".join(telefonlar)
+        temiz_mailler = temiz_mail_listesi(mailler)
+        temiz_telefonlar = temiz_telefon_listesi(telefonlar)
+
+        if temiz_mailler:
+            sonuc["eposta"] = ", ".join(temiz_mailler)
+        if temiz_telefonlar:
+            sonuc["telefon"] = ", ".join(temiz_telefonlar)
 
         sonuc["kaynak"] = kaynak
         sonuc["durum"] = "Tamamlandi"
@@ -2480,6 +2729,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.0
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.1
 </div>
 """, unsafe_allow_html=True)
