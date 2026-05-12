@@ -1787,10 +1787,9 @@ with st.sidebar:
         help="Streamlit Cloud için 4-6 arası genelde güvenlidir. Çökme olursa düşür."
     )
 
-    global SCAN_MODE, SEARCH_QUERY_LIMIT, PLAYWRIGHT_FALLBACK_ENABLED
-    SCAN_MODE = tarama_modu
-    SEARCH_QUERY_LIMIT = mod_ayar["query_limit"]
-    PLAYWRIGHT_FALLBACK_ENABLED = mod_ayar["playwright_fallback"]
+    globals()["SCAN_MODE"] = tarama_modu
+    globals()["SEARCH_QUERY_LIMIT"] = mod_ayar["query_limit"]
+    globals()["PLAYWRIGHT_FALLBACK_ENABLED"] = mod_ayar["playwright_fallback"]
 
     st.caption(mod_ayar["aciklama"])
     st.caption(f"Firma başına arama limiti: {SEARCH_QUERY_LIMIT} | Playwright fallback: {'Açık' if PLAYWRIGHT_FALLBACK_ENABLED else 'Kapalı'}")
