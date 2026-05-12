@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 import concurrent.futures
 import pdfplumber
-from urllib.parse import urlparse, urljoin, quote_plus, parse_qs, unquote
+from urllib.parse import urlparse, urljoin, quote_plus, parse_qs, unquote, urlencode, urlunparse, unquote, urlencode, urlunparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.1"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.2"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -332,7 +332,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.1</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.2</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -357,7 +357,7 @@ def ozellik_kartlari_goster():
         <div class="feature-card">
             <div class="icon">🔎</div>
             <strong>Akıllı Firma Çekimi</strong>
-            <span>URL, PDF, Excel ve manuel girişlerden firma isimlerini ayıklar.</span>
+            <span>URL, PDF, Excel ve manuel girişlerden firma isimlerini çoklu motorla ayıklar.</span>
         </div>
         <div class="feature-card">
             <div class="icon">🌐</div>
@@ -1240,6 +1240,664 @@ def musiad_katilimci_listesi_cek(url, progress_callback=None):
 
     return final
 
+
+
+
+
+def maktek_firma_adi_temizle(text):
+    """
+    MAKTEK sayfasında satırlar genelde:
+    FIRMA ADI + ÜLKE + Markalar/Temsilcilikler + Detaylı İncele + Salon/Stant
+    şeklinde gelir. Bu fonksiyon sadece firma adını bırakır.
+    """
+    if not text:
+        return ""
+
+    t = firma_adi_temizle(text)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # Detaylı incele ve sonrasını sil
+    t = re.split(r"\bDetaylı\s+İncele\b|\bDetayli\s+Incele\b", t, flags=re.IGNORECASE)[0].strip()
+
+    # Salon/Stant ve sonrasını sil
+    t = re.split(r"\bSalon\s*:|\bStant\s*:", t, flags=re.IGNORECASE)[0].strip()
+
+    # Ülke bilgisinden itibaren kes
+    ulkeler = [
+        "Türkı̇ye", "Türkiye", "Turkiye", "Turkey",
+        "Almanya", "Amerı̇ka", "Amerika", "Avusturya", "Belçı̇ka", "Belçika",
+        "Bulgarı̇stan", "Bulgaristan", "Çek Cumhurı̇yetı̇", "Çek Cumhuriyeti",
+        "Çı̇n", "Çin", "Fı̇nlandı̇ya", "Finlandiya", "Fransa", "Güney Kore",
+        "Hı̇ndı̇stan", "Hindistan", "Hollanda", "İngı̇ltere", "İngiltere",
+        "İspanya", "İsvı̇çre", "İsviçre", "İtalya", "Japonya", "Kanada",
+        "Kore", "Macarı̇stan", "Macaristan", "Polonya", "Portekı̇z",
+        "Portekiz", "Tayvan"
+    ]
+
+    earliest = None
+    lower_t = t.lower()
+
+    for ulke in ulkeler:
+        idx = lower_t.find(ulke.lower())
+        if idx > 0:
+            if earliest is None or idx < earliest:
+                earliest = idx
+
+    if earliest is not None:
+        t = t[:earliest].strip()
+
+    # Markalar/Temsilcilikler ve sonrasını sil
+    t = re.split(r"\bMarkalar\b|\bTemsilcilikler\b|\bTemsilci Firma\b", t, flags=re.IGNORECASE)[0].strip()
+
+    # Gereksiz kuyruklar
+    t = t.strip(" -–|•,:;")
+
+    return t
+
+
+def maktek_katilimci_listesi_cek(url, progress_callback=None):
+    """
+    MAKTEK Avrasya özel motoru.
+    Bu site pagination'ı ?page=2 şeklinde statik verdiği için Playwright'a gerek kalmadan
+    1'den son sayfaya kadar URL'leri hızlıca okur.
+    """
+    baslangic_zamani = time.time()
+    url = normalize_url(url)
+
+    def bildir(adim, sayfa=0, toplam=0, bulunan=0):
+        if progress_callback:
+            try:
+                progress_callback({
+                    "adim": adim,
+                    "sayfa_no": sayfa,
+                    "toplam_sayfa": toplam,
+                    "bulunan": bulunan,
+                    "gecen": time.time() - baslangic_zamani
+                })
+            except Exception:
+                pass
+
+    def sayfa_url_uret(base_url, page_no):
+        parsed = urlparse(base_url)
+        qs = parse_qs(parsed.query)
+        if page_no <= 1:
+            qs.pop("page", None)
+        else:
+            qs["page"] = [str(page_no)]
+        new_query = urlencode(qs, doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
+    def html_firmalari_cek(html):
+        soup = BeautifulSoup(html or "", "html.parser")
+        adaylar = []
+
+        # En güvenilir alan: Detaylı İncele geçen linkler
+        for a in soup.find_all("a"):
+            txt = firma_adi_temizle(a.get_text(" "))
+            if not txt:
+                continue
+
+            if ("Detaylı İncele" in txt or "Detayli Incele" in txt) and ("Salon" in txt or "Stant" in txt):
+                firma = maktek_firma_adi_temizle(txt)
+                if firma:
+                    adaylar.append(firma)
+
+        # Bazı HTML yapılarında metin link dışında olabilir; gövdeden fallback
+        if not adaylar:
+            body_text = soup.get_text("\n")
+            for line in body_text.split("\n"):
+                line = firma_adi_temizle(line)
+                if ("Detaylı İncele" in line or "Detayli Incele" in line) and ("Salon" in line or "Stant" in line):
+                    firma = maktek_firma_adi_temizle(line)
+                    if firma:
+                        adaylar.append(firma)
+
+        # Filtrele
+        temiz = []
+        yasak = [
+            "SalonNo", "StandNo", "Temsilci Firma", "Katılımcı Listesi",
+            "Firmaya Mesaj Gönder", "Mesajınız", "Gönder", "Vazgeç"
+        ]
+
+        for f in adaylar:
+            low = f.lower()
+            if not f or len(f) < 2 or len(f) > 140:
+                continue
+            if any(y.lower() in low for y in yasak):
+                continue
+            if re.fullmatch(r"[\d\s\-\+\(\):\.]+", f):
+                continue
+            temiz.append(f)
+
+        return temiz
+
+    # İlk sayfayı oku
+    firmalar = []
+    ilk_url = sayfa_url_uret(url, 1)
+    bildir("MAKTEK ilk sayfa okunuyor...", 1, 0, 0)
+
+    try:
+        res = guvenli_get(ilk_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
+        html = res.text or ""
+    except Exception as e:
+        raise Exception(f"MAKTEK ilk sayfa okunamadı: {str(e)}")
+
+    # Son sayfa sayısını HTML'den bul
+    toplam_sayfa = 1
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        hrefs = " ".join([a.get("href", "") for a in soup.find_all("a", href=True)])
+        nums = [int(x) for x in re.findall(r"[?&]page=(\d+)", hrefs)]
+        if nums:
+            toplam_sayfa = max(nums)
+        else:
+            body = soup.get_text(" ")
+            # Sayfada 50 / 51 gibi görünen alanları da yakala
+            nums2 = [int(x) for x in re.findall(r"\b([1-9]\d?)\b", body)]
+            if nums2:
+                toplam_sayfa = max([n for n in nums2 if n <= 80] or [1])
+    except Exception:
+        toplam_sayfa = 1
+
+    # Güvenlik limiti
+    toplam_sayfa = min(max(toplam_sayfa, 1), 80)
+
+    # 1. sayfa
+    sayfa_firmalari = html_firmalari_cek(html)
+    firmalar.extend(sayfa_firmalari)
+    bildir(f"MAKTEK sayfa 1/{toplam_sayfa} tamamlandı.", 1, toplam_sayfa, len(set([x.lower() for x in firmalar])))
+
+    # Diğer sayfalar
+    for page_no in range(2, toplam_sayfa + 1):
+        try:
+            bildir(f"MAKTEK sayfa {page_no}/{toplam_sayfa} okunuyor...", page_no, toplam_sayfa, len(set([x.lower() for x in firmalar])))
+            page_url = sayfa_url_uret(url, page_no)
+            time.sleep(random.uniform(0.25, 0.65))
+            r = guvenli_get(page_url, timeout=REQUEST_TIMEOUT, referer=ilk_url)
+
+            if r.status_code >= 400:
+                continue
+
+            page_firmalar = html_firmalari_cek(r.text or "")
+            firmalar.extend(page_firmalar)
+
+            bildir(f"MAKTEK sayfa {page_no}/{toplam_sayfa} tamamlandı.", page_no, toplam_sayfa, len(set([x.lower() for x in firmalar])))
+
+        except Exception as e:
+            logging.warning(f"MAKTEK sayfa okunamadı {page_no}: {str(e)}")
+            continue
+
+    # Mükerrer temizliği
+    final = []
+    seen = set()
+
+    for f in firmalar:
+        f = firma_adi_temizle(f)
+        key = f.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            final.append(f)
+
+    bildir("MAKTEK katılımcı çekimi tamamlandı.", toplam_sayfa, toplam_sayfa, len(final))
+    return final
+
+
+
+
+# ============================================================
+# EVRENSEL URL MOTORLARI
+# ============================================================
+
+def url_sayfa_parametreli_mi(url):
+    """
+    URL'nin ?page=2 gibi sayfa parametresine uygun olup olmadığını anlamak için kullanılır.
+    """
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        return "page" in qs or True
+    except Exception:
+        return False
+
+
+def sayfa_url_uret_genel(base_url, page_no, param_name="page"):
+    parsed = urlparse(base_url)
+    qs = parse_qs(parsed.query)
+
+    if page_no <= 1:
+        qs.pop(param_name, None)
+    else:
+        qs[param_name] = [str(page_no)]
+
+    new_query = urlencode(qs, doseq=True)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+
+
+def toplam_sayfa_tahmin_et(html):
+    """
+    HTML içinden pagination sayısını tahmin eder.
+    ?page=51, Sayfa 1 / 14, pagination linkleri gibi işaretleri arar.
+    """
+    toplam = 1
+
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+
+        hrefs = " ".join([a.get("href", "") for a in soup.find_all("a", href=True)])
+        nums = [int(x) for x in re.findall(r"[?&]page=(\d+)", hrefs)]
+        if nums:
+            toplam = max(toplam, max(nums))
+
+        body = soup.get_text(" ")
+        m = re.search(r"Sayfa\s+\d+\s*/\s*(\d+)", body, flags=re.IGNORECASE)
+        if m:
+            toplam = max(toplam, int(m.group(1)))
+
+        # Pagination butonlarında yalnızca 1-80 arası makul sayıları dikkate al
+        page_nums = []
+        for a in soup.find_all(["a", "button"]):
+            txt = firma_adi_temizle(a.get_text(" "))
+            if re.fullmatch(r"\d{1,2}", txt):
+                n = int(txt)
+                if 1 <= n <= 80:
+                    page_nums.append(n)
+
+        if page_nums:
+            toplam = max(toplam, max(page_nums))
+
+    except Exception:
+        pass
+
+    return min(max(toplam, 1), 80)
+
+
+def genel_firma_satiri_mi(text):
+    """
+    Genel URL motoru için firma adı olabilecek satırları seçer.
+    Çok katı değil; çünkü bazı fuar sitelerinde marka adı sadece tek kelimedir.
+    """
+    if not text:
+        return False
+
+    t = firma_adi_temizle(text)
+    low = t.lower()
+
+    yasak = [
+        "katılımcı", "katilimci", "sektör", "sektor", "şehir", "sehir",
+        "sonraki", "önceki", "onceki", "next", "previous",
+        "detaylı incele", "detayli incele", "firma ara", "arama",
+        "salon", "stant", "stand", "hall", "booth",
+        "gizlilik", "kvkk", "cookie", "iletişim", "iletisim",
+        "fuar", "expo", "visitor", "exhibitor list", "download",
+        "pdf", "excel", "home", "login", "register"
+    ]
+
+    if len(t) < 3 or len(t) > 130:
+        return False
+
+    if any(y in low for y in yasak):
+        return False
+
+    if re.search(r"https?://|www\.|@", low):
+        return False
+
+    if re.fullmatch(r"[\d\s\-\+\(\):\.]+", t):
+        return False
+
+    if not re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]", t):
+        return False
+
+    return True
+
+
+def genel_html_firma_adaylari_cek(html):
+    """
+    Bilinmeyen fuar siteleri için HTML'den firma adaylarını çıkarır.
+    Table, card, class name, title/data-name ve link metinlerini dener.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    adaylar = []
+
+    for tag in soup(["script", "style", "noscript", "svg", "footer", "header", "nav"]):
+        tag.decompose()
+
+    # 1) Tablolarda ilk hücre çoğu zaman firma adıdır
+    for row in soup.select("table tbody tr, table tr"):
+        try:
+            cells = row.find_all(["td", "th"])
+            if len(cells) >= 1:
+                first = firma_adi_temizle(cells[0].get_text(" "))
+                if genel_firma_satiri_mi(first):
+                    adaylar.append(first)
+        except Exception:
+            continue
+
+    # 2) Firma kartları / yaygın class isimleri
+    selectors = [
+        "[class*='company']", "[class*='exhibitor']", "[class*='participant']",
+        "[class*='firma']", "[class*='katilimci']", "[class*='katılımcı']",
+        "[class*='brand']", "[class*='name']", "[data-name]", "[data-title]",
+        "h2", "h3", "h4", "a[title]", "img[alt]"
+    ]
+
+    for sel in selectors:
+        try:
+            for item in soup.select(sel):
+                vals = [
+                    item.get_text(" "),
+                    item.get("title"),
+                    item.get("data-title"),
+                    item.get("data-name"),
+                    item.get("alt")
+                ]
+                for v in vals:
+                    v = firma_adi_temizle(v)
+                    if genel_firma_satiri_mi(v):
+                        adaylar.append(v)
+        except Exception:
+            continue
+
+    # 3) JSON benzeri alanlar
+    json_patterns = [
+        r'"company"\s*:\s*"([^"]{3,120})"',
+        r'"companyName"\s*:\s*"([^"]{3,120})"',
+        r'"exhibitorName"\s*:\s*"([^"]{3,120})"',
+        r'"name"\s*:\s*"([^"]{3,120})"',
+        r'"title"\s*:\s*"([^"]{3,120})"',
+    ]
+
+    raw_html = str(html or "")
+    for pattern in json_patterns:
+        for match in re.findall(pattern, raw_html, flags=re.IGNORECASE):
+            m = firma_adi_temizle(match)
+            if genel_firma_satiri_mi(m):
+                adaylar.append(m)
+
+    # Temizle / tekilleştir
+    final = []
+    seen = set()
+    for a in adaylar:
+        a = firma_adi_temizle(a)
+        key = a.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            final.append(a)
+
+    return final
+
+
+def genel_pagination_url_motoru(url, progress_callback=None):
+    """
+    Bilinmeyen ama ?page=2, ?page=3 gibi çalışan siteler için genel pagination motoru.
+    MAKTEK özel motoru kadar kesin değildir ama birçok fuarda işe yarar.
+    """
+    baslangic_zamani = time.time()
+
+    def bildir(adim, sayfa=0, toplam=0, bulunan=0):
+        if progress_callback:
+            try:
+                progress_callback({
+                    "adim": adim,
+                    "sayfa_no": sayfa,
+                    "toplam_sayfa": toplam,
+                    "bulunan": bulunan,
+                    "gecen": time.time() - baslangic_zamani
+                })
+            except Exception:
+                pass
+
+    firmalar = []
+    url = normalize_url(url)
+
+    try:
+        bildir("Genel pagination motoru: ilk sayfa okunuyor...", 1, 0, 0)
+        res = guvenli_get(url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
+        if res.status_code >= 400:
+            return []
+
+        html = res.text or ""
+        toplam_sayfa = toplam_sayfa_tahmin_et(html)
+
+        # Eğer 1 sayfa görünüyorsa bu motoru zorlamaya gerek yok
+        if toplam_sayfa <= 1:
+            return []
+
+        ilk_firmalar = genel_html_firma_adaylari_cek(html)
+        firmalar.extend(ilk_firmalar)
+        bildir(f"Genel pagination: sayfa 1/{toplam_sayfa} tamamlandı.", 1, toplam_sayfa, len(set([x.lower() for x in firmalar])))
+
+        for page_no in range(2, toplam_sayfa + 1):
+            try:
+                bildir(f"Genel pagination: sayfa {page_no}/{toplam_sayfa} okunuyor...", page_no, toplam_sayfa, len(set([x.lower() for x in firmalar])))
+                page_url = sayfa_url_uret_genel(url, page_no)
+                time.sleep(random.uniform(0.25, 0.7))
+                r = guvenli_get(page_url, timeout=REQUEST_TIMEOUT, referer=url)
+
+                if r.status_code >= 400:
+                    continue
+
+                page_firmalar = genel_html_firma_adaylari_cek(r.text or "")
+
+                # Eğer sayfa boşsa devam etmeyelim
+                if not page_firmalar:
+                    continue
+
+                firmalar.extend(page_firmalar)
+                bildir(f"Genel pagination: sayfa {page_no}/{toplam_sayfa} tamamlandı.", page_no, toplam_sayfa, len(set([x.lower() for x in firmalar])))
+
+            except Exception as e:
+                logging.warning(f"Genel pagination sayfa okunamadı {page_no}: {str(e)}")
+                continue
+
+    except Exception as e:
+        logging.warning(f"Genel pagination motoru hata: {str(e)}")
+        return []
+
+    final = []
+    seen = set()
+    for f in firmalar:
+        f = firma_adi_temizle(f)
+        key = f.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            final.append(f)
+
+    bildir("Genel pagination motoru tamamlandı.", 0, 0, len(final))
+    return final
+
+
+def genel_playwright_next_motoru(url, progress_callback=None):
+    """
+    Bilinmeyen JavaScript siteleri için genel Playwright next-button motoru.
+    Tabloyu veya kartları okur, Sonraki/Next butonuna basmayı dener.
+    """
+    if not PLAYWRIGHT_AKTIF:
+        return []
+
+    baslangic_zamani = time.time()
+
+    def bildir(adim, sayfa=0, toplam=0, bulunan=0):
+        if progress_callback:
+            try:
+                progress_callback({
+                    "adim": adim,
+                    "sayfa_no": sayfa,
+                    "toplam_sayfa": toplam,
+                    "bulunan": bulunan,
+                    "gecen": time.time() - baslangic_zamani
+                })
+            except Exception:
+                pass
+
+    firmalar = []
+    url = normalize_url(url)
+
+    try:
+        bildir("Genel JavaScript motoru: tarayıcı açılıyor...", 0, 0, 0)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+            )
+
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+                viewport={"width": 1450, "height": 950},
+                locale="tr-TR"
+            )
+
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(6000)
+
+            toplam_sayfa = 20
+            try:
+                body_text = page.inner_text("body")
+                m = re.search(r"Sayfa\s+\d+\s*/\s*(\d+)", body_text, flags=re.IGNORECASE)
+                if m:
+                    toplam_sayfa = int(m.group(1))
+            except Exception:
+                pass
+
+            toplam_sayfa = min(max(toplam_sayfa, 1), 40)
+
+            for sayfa_no in range(1, toplam_sayfa + 1):
+                bildir(f"Genel JS motoru: sayfa {sayfa_no}/{toplam_sayfa} okunuyor...", sayfa_no, toplam_sayfa, len(set([x.lower() for x in firmalar])))
+
+                page.wait_for_timeout(1500)
+
+                # Scroll ederek görünür alanı genişlet
+                for _ in range(6):
+                    try:
+                        html = page.content()
+                        page_firmalar = genel_html_firma_adaylari_cek(html)
+                        firmalar.extend(page_firmalar)
+
+                        page.evaluate("""
+                            () => {
+                                const all = Array.from(document.querySelectorAll('*'));
+                                for (const el of all) {
+                                    try {
+                                        if (el.scrollHeight > el.clientHeight + 10) {
+                                            el.scrollTop = el.scrollTop + Math.floor(el.clientHeight * 0.8);
+                                        }
+                                    } catch(e) {}
+                                }
+                                window.scrollBy(0, 600);
+                            }
+                        """)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(700)
+
+                if sayfa_no >= toplam_sayfa:
+                    break
+
+                # Sonraki butonu
+                clicked = False
+                try:
+                    clicked = page.evaluate("""
+                        () => {
+                            const els = Array.from(document.querySelectorAll('button, a'));
+                            const btn = els.find(el => {
+                                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                                const disabled = el.disabled === true || el.getAttribute('disabled') !== null || el.getAttribute('aria-disabled') === 'true';
+                                return !disabled && (txt.includes('sonraki') || txt.includes('next'));
+                            });
+                            if (btn) {
+                                btn.scrollIntoView({block:'center'});
+                                btn.click();
+                                return true;
+                            }
+                            return false;
+                        }
+                    """)
+                except Exception:
+                    clicked = False
+
+                if not clicked:
+                    break
+
+                page.wait_for_timeout(2500)
+
+            browser.close()
+
+    except Exception as e:
+        logging.warning(f"Genel Playwright next motoru hata: {str(e)}")
+        return []
+
+    final = []
+    seen = set()
+    for f in firmalar:
+        f = firma_adi_temizle(f)
+        key = f.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            final.append(f)
+
+    bildir("Genel JavaScript motoru tamamlandı.", 0, 0, len(final))
+    return final
+
+
+def evrensel_url_firma_cek(url, progress_callback=None):
+    """
+    Tüm URL firma çekme motorlarını tek yerde yöneten ana akış.
+    Yeni site geldiğinde ana panel bozulmaz; buraya yeni adaptör eklenir.
+    """
+    url_l = (url or "").lower()
+    firmalar = []
+
+    # 1) Bilinen adaptörler
+    if "musiadexpo.com" in url_l:
+        if progress_callback:
+            progress_callback({"adim": "MÜSİAD adaptörü seçildi.", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
+        firmalar = musiad_katilimci_listesi_cek(url, progress_callback=progress_callback)
+
+    elif "maktekfuari.com" in url_l:
+        if progress_callback:
+            progress_callback({"adim": "MAKTEK adaptörü seçildi.", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
+        firmalar = maktek_katilimci_listesi_cek(url, progress_callback=progress_callback)
+
+    # 2) Genel pagination motoru
+    if not firmalar:
+        if progress_callback:
+            progress_callback({"adim": "Genel pagination motoru deneniyor...", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
+        firmalar = genel_pagination_url_motoru(url, progress_callback=progress_callback)
+
+    # 3) Genel statik HTML motoru
+    if not firmalar:
+        if progress_callback:
+            progress_callback({"adim": "Genel statik HTML motoru deneniyor...", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
+        firmalar = firmalari_url_den_cek(url)
+
+    # 4) Genel JavaScript / Next button motoru
+    if not firmalar:
+        if progress_callback:
+            progress_callback({"adim": "Genel JavaScript motoru deneniyor...", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
+        firmalar = genel_playwright_next_motoru(url, progress_callback=progress_callback)
+
+    # 5) Son fallback: eski Playwright selector motoru
+    if not firmalar:
+        if progress_callback:
+            progress_callback({"adim": "Son fallback tarayıcı motoru deneniyor...", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
+        firmalar = firmalari_url_den_cek_playwright(url)
+
+    # Son temizlik
+    final = []
+    seen = set()
+    for f in firmalar:
+        f = firma_adi_temizle(f)
+        key = f.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            final.append(f)
+
+    return final
 
 
 
@@ -2403,20 +3061,13 @@ with t1:
                 with st.spinner("URL okunuyor ve firma isimleri cikariliyor..."):
                     firmalar = []
 
-                    # MÜSİAD özel tablo motoru: tüm sayfaları dolaşır ve Katılımcı sütununu alır
-                    if "musiadexpo.com" in url_input.lower():
-                        st.info("MÜSİAD özel katılımcı motoru çalışıyor. Tüm sayfalar dolaşılıyor...")
-                        firmalar = musiad_katilimci_listesi_cek(url_input, progress_callback=progress_guncelle)
-
-                    # Genel motorlar
-                    if not firmalar:
-                        progress_guncelle({"adim": "Genel statik HTML motoru deneniyor...", "bulunan": 0, "gecen": time.time() - baslangic})
-                        firmalar = firmalari_url_den_cek(url_input)
-
-                    if not firmalar:
-                        st.warning("Statik HTML icinde firma bulunamadi. JavaScript tarayici motoru deneniyor...")
-                        progress_guncelle({"adim": "JavaScript tarayıcı motoru deneniyor...", "bulunan": 0, "gecen": time.time() - baslangic})
-                        firmalar = firmalari_url_den_cek_playwright(url_input)
+                    # Evrensel çoklu motor:
+                    # 1) Bilinen adaptörler: MÜSİAD / MAKTEK
+                    # 2) Genel pagination
+                    # 3) Genel statik HTML
+                    # 4) Genel JavaScript / Sonraki butonu
+                    # 5) Fallback Playwright selector
+                    firmalar = evrensel_url_firma_cek(url_input, progress_callback=progress_guncelle)
 
                     progress_bar.progress(1.0)
                     durum_kutusu.success("✅ URL tarama tamamlandı.")
@@ -2717,6 +3368,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.1
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.2
 </div>
 """, unsafe_allow_html=True)
