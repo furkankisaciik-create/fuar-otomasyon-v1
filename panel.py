@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.4"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.5"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -77,6 +77,78 @@ st.set_page_config(
     layout="wide",
     page_icon="🚀"
 )
+
+
+# ============================================================
+# GIRIS SISTEMI
+# ============================================================
+
+LOGIN_USERNAME = "perge"
+LOGIN_PASSWORD = "perge2026"
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+
+def giris_ekrani():
+    st.markdown("""
+    <style>
+    .login-wrap {
+        max-width: 480px;
+        margin: 80px auto;
+        padding: 34px;
+        border-radius: 24px;
+        background: linear-gradient(135deg, rgba(15,23,42,0.98), rgba(30,41,59,0.96));
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 25px 60px rgba(0,0,0,0.35);
+        color: white;
+    }
+
+    .login-title {
+        font-size: 34px;
+        font-weight: 800;
+        margin-bottom: 10px;
+        text-align: center;
+    }
+
+    .login-sub {
+        text-align: center;
+        color: rgba(255,255,255,0.72);
+        margin-bottom: 24px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="login-wrap">
+        <div class="login-title">🔐 Güvenli Giriş</div>
+        <div class="login-sub">
+            Perge Mimarlık & Squarexpo<br>
+            Fuar Müşteri Otomasyonu V1.5
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1,2,1])
+
+    with col2:
+        username = st.text_input("Kullanıcı Adı")
+        password = st.text_input("Şifre", type="password")
+
+        if st.button("🚀 Giriş Yap", use_container_width=True):
+            if username == LOGIN_USERNAME and password == LOGIN_PASSWORD:
+                st.session_state["authenticated"] = True
+                st.success("Giriş başarılı.")
+                st.rerun()
+            else:
+                st.error("Kullanıcı adı veya şifre hatalı.")
+
+    st.stop()
+
+
+if not st.session_state["authenticated"]:
+    giris_ekrani()
+
 
 
 # ============================================================
@@ -332,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.4</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.5</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -3110,6 +3182,12 @@ kurumsal_banner_goster()
 ozellik_kartlari_goster()
 
 with st.sidebar:
+    st.success("🔐 Giriş yapıldı")
+
+    if st.button("🚪 Çıkış Yap", use_container_width=True):
+        st.session_state["authenticated"] = False
+        st.rerun()
+
     st.header("⚙️ Tarama Ayarlari")
 
     if PLAYWRIGHT_AKTIF:
@@ -3570,6 +3648,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.4
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.5
 </div>
 """, unsafe_allow_html=True)
