@@ -583,18 +583,39 @@ def firma_listesi_filtrele(adaylar):
 
 def musiad_katilimci_listesi_cek(url):
     """
-    MÜSİAD Expo özel motoru V3.9.
-    Mantık:
-    - Tablo güvenilir kabul edilir.
-    - Sadece Katılımcı sütununun ilk hücresi alınır.
-    - A.Ş. / LTD şartı aranmaz; çünkü bazı gerçek firmalar sadece marka adı olarak yazılmış.
-    - Sonraki butonuyla tüm sayfalar dolaşılır.
+    MÜSİAD Expo özel motoru V4.0.
+    - Tablo içi scroll alanını aşağı kaydırarak o sayfadaki tüm görünen/virtual satırları toplar.
+    - Sonraki butonuna basarak tüm sayfaları dolaşır.
+    - Katılımcı sütunundaki ilk hücreyi firma adı olarak alır.
     """
     if not PLAYWRIGHT_AKTIF:
         raise Exception("Playwright aktif değil. MÜSİAD özel motoru çalışamaz.")
 
     url = normalize_url(url)
-    firmalar = []
+    tum_firmalar = []
+
+    def firma_ekle(firma):
+        firma = firma_adi_temizle(firma)
+        firma = musiad_firma_adi_temizle(firma)
+
+        if not firma:
+            return
+
+        low = firma.lower()
+        yasak = [
+            "katılımcı", "katilimci", "sektör", "sektor", "şehir", "sehir",
+            "foto galeri", "genel bakış", "gizlilik", "medya", "musiad", "müsiad",
+            "sonraki", "önceki", "onceki"
+        ]
+
+        if len(firma) < 3 or len(firma) > 120:
+            return
+        if any(y in low for y in yasak):
+            return
+        if re.fullmatch(r"[\d\s\-\+\(\):\.]+", firma):
+            return
+
+        tum_firmalar.append(firma)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -609,15 +630,15 @@ def musiad_katilimci_listesi_cek(url):
 
         page = browser.new_page(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
-            viewport={"width": 1400, "height": 950},
+            viewport={"width": 1500, "height": 1000},
             locale="tr-TR"
         )
 
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(7000)
+        page.wait_for_timeout(8000)
 
-        # Tablo gelene kadar bekle
-        for _ in range(20):
+        # Tablo bekle
+        for _ in range(25):
             try:
                 if page.locator("table tbody tr").count() > 0:
                     break
@@ -625,66 +646,124 @@ def musiad_katilimci_listesi_cek(url):
                 pass
             page.wait_for_timeout(1000)
 
-        max_sayfa = 40
+        max_sayfa = 50
         sayfa_no = 0
-        onceki_sayfa_imzasi = ""
+        son_sayfa_imza = ""
 
         while sayfa_no < max_sayfa:
             sayfa_no += 1
             page.wait_for_timeout(1500)
 
-            # Tablo satırlarını oku
-            rows = page.locator("table tbody tr")
-            row_count = rows.count()
+            # Her sayfada tablo içi scroll'u başa al
+            try:
+                page.evaluate("""
+                    () => {
+                        const table = document.querySelector('table');
+                        if (!table) return;
+                        const candidates = [];
+                        let el = table.parentElement;
+                        while (el) {
+                            candidates.push(el);
+                            el = el.parentElement;
+                        }
+                        candidates.forEach(x => {
+                            try {
+                                if (x.scrollHeight > x.clientHeight) x.scrollTop = 0;
+                                if (x.scrollWidth > x.clientWidth) x.scrollLeft = 0;
+                            } catch(e) {}
+                        });
+                    }
+                """)
+            except Exception:
+                pass
 
-            sayfa_firmalari = []
+            # Bu sayfadaki satırları tablo içi scroll ederek topla
+            onceki_imza = ""
+            stabil_sayac = 0
 
-            for i in range(row_count):
+            for scroll_step in range(30):
+                page.wait_for_timeout(600)
+
                 try:
-                    cells = rows.nth(i).locator("td")
-                    if cells.count() == 0:
-                        continue
+                    rows = page.locator("table tbody tr")
+                    row_count = rows.count()
+                    sayfa_firmalari = []
 
-                    # Katılımcı sütunu: ilk hücre
-                    firma = cells.nth(0).inner_text(timeout=3000)
-                    firma = firma_adi_temizle(firma)
-                    firma = musiad_firma_adi_temizle(firma)
+                    for i in range(row_count):
+                        try:
+                            cells = rows.nth(i).locator("td")
+                            if cells.count() == 0:
+                                continue
 
-                    # Tablo güvenilir olduğu için strict şirket unvanı aramıyoruz.
-                    # Sadece boş, başlık, kategori ve çok kısa metinleri atıyoruz.
-                    low = firma.lower()
-                    yasak = [
-                        "katılımcı", "katilimci", "sektör", "sektor", "şehir", "sehir",
-                        "foto galeri", "genel bakış", "gizlilik", "medya", "musiad", "müsiad",
-                        "sonraki", "önceki", "onceki"
-                    ]
+                            firma = cells.nth(0).inner_text(timeout=2000)
+                            firma = firma_adi_temizle(firma)
 
-                    if not firma:
-                        continue
-                    if len(firma) < 3 or len(firma) > 100:
-                        continue
-                    if any(y in low for y in yasak):
-                        continue
-                    if re.fullmatch(r"[\d\s\-\+\(\):\.]+", firma):
-                        continue
+                            if firma:
+                                sayfa_firmalari.append(firma)
+                                firma_ekle(firma)
 
-                    sayfa_firmalari.append(firma)
-                    firmalar.append(firma)
+                        except Exception:
+                            continue
+
+                    mevcut_imza = "|".join(sayfa_firmalari)
+
+                    if mevcut_imza == onceki_imza:
+                        stabil_sayac += 1
+                    else:
+                        stabil_sayac = 0
+
+                    onceki_imza = mevcut_imza
+
+                    # Tablo içindeki scroll alanını aşağı indir
+                    scrolled = page.evaluate("""
+                        () => {
+                            const table = document.querySelector('table');
+                            if (!table) return false;
+
+                            let best = null;
+                            let el = table.parentElement;
+
+                            while (el) {
+                                try {
+                                    const canScrollY = el.scrollHeight > el.clientHeight + 5;
+                                    if (canScrollY) {
+                                        if (!best || el.scrollHeight > best.scrollHeight) best = el;
+                                    }
+                                } catch(e) {}
+                                el = el.parentElement;
+                            }
+
+                            if (!best) return false;
+
+                            const before = best.scrollTop;
+                            best.scrollTop = best.scrollTop + Math.floor(best.clientHeight * 0.85);
+                            return best.scrollTop !== before;
+                        }
+                    """)
+
+                    if not scrolled or stabil_sayac >= 3:
+                        break
 
                 except Exception:
-                    continue
+                    break
 
-            # Sayfa değişimi kontrolü için imza
-            sayfa_imzasi = "|".join(sayfa_firmalari[:3])
+            # Sayfa imzası: toplanan son 5 firma
+            current_unique = []
+            seen_tmp = set()
+            for f in tum_firmalar:
+                k = f.lower().strip()
+                if k not in seen_tmp:
+                    seen_tmp.add(k)
+                    current_unique.append(f)
+            sayfa_imza = "|".join(current_unique[-5:])
 
-            # Eğer hiç satır yoksa çık
-            if not sayfa_firmalari:
-                break
-
-            # Sonraki butonuna bas
+            # Sonraki sayfaya geç
             try:
-                # Önce standart Playwright selectorleri
                 clicked = False
+
+                # Sayfa dibine in, pagination görünür olsun
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(800)
 
                 selectors = [
                     "button:has-text('Sonraki')",
@@ -716,7 +795,6 @@ def musiad_katilimci_listesi_cek(url):
                     except Exception:
                         continue
 
-                # Selector tıklamazsa JS ile text'e göre buton bul ve tıkla
                 if not clicked:
                     clicked = page.evaluate("""
                         () => {
@@ -738,25 +816,22 @@ def musiad_katilimci_listesi_cek(url):
                 if not clicked:
                     break
 
-                # Yeni sayfanın yüklenmesini bekle
+                # Yeni sayfa değişti mi kontrol et
                 degisti = False
-                for _ in range(15):
+                for _ in range(20):
                     page.wait_for_timeout(1000)
                     try:
-                        yeni_rows = page.locator("table tbody tr")
-                        yeni_count = yeni_rows.count()
-                        yeni_firmalar = []
-                        for j in range(min(3, yeni_count)):
-                            txt = yeni_rows.nth(j).locator("td").nth(0).inner_text(timeout=1000)
-                            yeni_firmalar.append(firma_adi_temizle(txt))
-                        yeni_imza = "|".join(yeni_firmalar)
-                        if yeni_imza and yeni_imza != sayfa_imzasi and yeni_imza != onceki_sayfa_imzasi:
-                            degisti = True
-                            break
+                        rows = page.locator("table tbody tr")
+                        if rows.count() > 0:
+                            first_txt = rows.nth(0).locator("td").nth(0).inner_text(timeout=1000)
+                            first_txt = firma_adi_temizle(first_txt)
+                            if first_txt and first_txt not in sayfa_imza and sayfa_imza != son_sayfa_imza:
+                                degisti = True
+                                break
                     except Exception:
                         pass
 
-                onceki_sayfa_imzasi = sayfa_imzasi
+                son_sayfa_imza = sayfa_imza
 
                 if not degisti:
                     break
@@ -769,7 +844,7 @@ def musiad_katilimci_listesi_cek(url):
     # Mükerrerleri sil
     final = []
     seen = set()
-    for f in firmalar:
+    for f in tum_firmalar:
         f = firma_adi_temizle(f)
         key = f.lower().strip()
         if key and key not in seen:
