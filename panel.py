@@ -134,9 +134,30 @@ def domain_al(url):
 def url_gecerli_mi(url):
     if not url:
         return False
+
     try:
+        url = str(url).strip()
+        low = url.lower()
+
+        if low.startswith(("javascript:", "mailto:", "tel:", "#", "data:", "about:")):
+            return False
+
+        if "javascript:void" in low:
+            return False
+
         parsed = urlparse(url)
-        return parsed.scheme in ["http", "https"] and bool(parsed.netloc)
+
+        if parsed.scheme not in ["http", "https"]:
+            return False
+
+        if not parsed.netloc:
+            return False
+
+        if "." not in parsed.netloc:
+            return False
+
+        return True
+
     except Exception:
         return False
 
@@ -144,7 +165,19 @@ def url_gecerli_mi(url):
 def normalize_url(url, base_url=None):
     if not url:
         return ""
-    url = url.strip()
+
+    url = str(url).strip()
+
+    # Gerçek web sitesi olmayan linkleri direkt ele
+    gecersiz_baslangiclar = [
+        "javascript:", "mailto:", "tel:", "#", "data:", "about:", "void(0)"
+    ]
+
+    if any(url.lower().startswith(x) for x in gecersiz_baslangiclar):
+        return ""
+
+    if url.lower() in ["javascript:void(0)", "javascript:;", "void(0)"]:
+        return ""
 
     if base_url and url.startswith("/"):
         return urljoin(base_url, url)
@@ -153,6 +186,9 @@ def normalize_url(url, base_url=None):
         return "https:" + url
 
     if not url.startswith("http://") and not url.startswith("https://"):
+        # İçinde nokta yoksa büyük ihtimalle gerçek domain değildir
+        if "." not in url:
+            return ""
         return "https://" + url
 
     return url
@@ -160,6 +196,7 @@ def normalize_url(url, base_url=None):
 
 def istenmeyen_link_mi(url):
     blacklist = [
+        "javascript:void", "javascript:", "mailto:", "tel:",
         "google.", "bing.", "microsoft.", "facebook.", "instagram.",
         "linkedin.", "youtube.", "twitter.", "x.com", "tiktok.",
         "wikipedia.", "yandex.", "duckduckgo.", "whatsapp.",
@@ -1053,10 +1090,20 @@ def firmalari_url_den_cek_playwright(url):
 # ============================================================
 
 def firma_websitesi_bul(firma_adi):
-    sorgu = quote_plus(f"{firma_adi} official website contact")
+    """
+    Firma adından resmi web sitesini bulmaya çalışır.
+    Önemli düzeltme:
+    - javascript:void(0), mailto, tel gibi sahte linkleri web sitesi sanmaz.
+    - Bing/DuckDuckGo arama iç linklerini ve sosyal medya linklerini eler.
+    """
+    sorgu = quote_plus(f"{firma_adi} resmi web sitesi")
+    alternatif_sorgu = quote_plus(f"{firma_adi} official website contact")
+
     arama_url_listesi = [
         f"https://www.bing.com/search?q={sorgu}",
-        f"https://duckduckgo.com/html/?q={sorgu}"
+        f"https://www.bing.com/search?q={alternatif_sorgu}",
+        f"https://duckduckgo.com/html/?q={sorgu}",
+        f"https://duckduckgo.com/html/?q={alternatif_sorgu}"
     ]
 
     for arama_url in arama_url_listesi:
@@ -1073,6 +1120,19 @@ def firma_websitesi_bul(firma_adi):
             for a in soup.find_all("a", href=True):
                 href = a.get("href", "").strip()
 
+                if not href:
+                    continue
+
+                low_href = href.lower().strip()
+
+                # Sahte veya aksiyon linkleri
+                if low_href.startswith(("javascript:", "mailto:", "tel:", "#", "data:", "about:")):
+                    continue
+
+                if "javascript:void" in low_href:
+                    continue
+
+                # DuckDuckGo yönlendirme linkleri
                 if "uddg=" in href:
                     try:
                         parsed = urlparse(href)
@@ -1080,24 +1140,43 @@ def firma_websitesi_bul(firma_adi):
                         if "uddg" in qs:
                             href = qs["uddg"][0]
                     except Exception:
-                        pass
+                        continue
+
+                # Bing yönlendirme linkleri bazen /ck/a?... içinde gelir; bunları şimdilik atlıyoruz
+                if href.startswith("/"):
+                    continue
 
                 href = normalize_url(href)
 
                 if not url_gecerli_mi(href):
                     continue
+
                 if istenmeyen_link_mi(href):
                     continue
 
                 domain = domain_al(href)
+
                 if not domain:
+                    continue
+
+                # Çok kısa / anlamsız domainleri ele
+                if len(domain) < 4:
                     continue
 
                 linkler.append(href)
 
+            # Mükerrer domainleri ayıkla
+            temiz_linkler = []
+            gorulen_domain = set()
+
             for link in linkler:
-                if link.startswith("http"):
-                    return link
+                d = domain_al(link)
+                if d and d not in gorulen_domain:
+                    gorulen_domain.add(d)
+                    temiz_linkler.append(link)
+
+            if temiz_linkler:
+                return temiz_linkler[0]
 
         except Exception as e:
             logging.warning(f"Arama hatasi: {firma_adi} - {str(e)}")
