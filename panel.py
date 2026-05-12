@@ -1160,105 +1160,306 @@ def arama_linkini_temizle(href):
 
 
 
+
+def turkce_karakter_temizle(text):
+    if not text:
+        return ""
+    tr_map = str.maketrans({
+        "ç": "c", "ğ": "g", "ı": "i", "ö": "o", "ş": "s", "ü": "u",
+        "Ç": "c", "Ğ": "g", "İ": "i", "I": "i", "Ö": "o", "Ş": "s", "Ü": "u"
+    })
+    return text.translate(tr_map)
+
+
+def firma_adi_sadelestir(firma_adi):
+    """
+    Firma adını arama motoru ve domain tahmini için sadeleştirir.
+    Örn:
+    ALSER TEKNOLOJI SAN CE TIC LTD ŞTİ -> alser teknoloji
+    AKÇIR GIDA TARIM SAN TIC LTD ŞTİ -> akcir gida tarim
+    """
+    text = firma_adi_temizle(firma_adi)
+    text = turkce_karakter_temizle(text).lower()
+
+    # HTML/OCR kaynaklı bozukluklar
+    text = text.replace(" ce tic ", " ve tic ")
+    text = text.replace(" san ce tic ", " san ve tic ")
+    text = text.replace(" san ve tic ", " ")
+    text = text.replace(" san tic ", " ")
+    text = text.replace(" ve san ", " ")
+    text = text.replace(" ve tic ", " ")
+
+    # Şirket unvanları ve çok genel kelimeler
+    stop_words = [
+        "a.s", "as", "aş", "anonim", "sirketi", "sirket", "limited", "ltd", "sti", "şti",
+        "sanayi", "san", "ticaret", "tic", "ve", "ile", "imalat", "ithalat", "ihracat",
+        "pazarlama", "dis", "dıs", "dış", "ic", "iç", "urunleri", "ürünleri",
+        "makine", "insaat", "inşaat", "gida", "gıda", "tarim", "tarım", "teknoloji",
+        "teknolojileri", "metal", "plastik", "tekstil", "otomotiv", "elektrik",
+        "elektronik", "mobilya", "ambalaj", "kimya", "medikal", "promosyon"
+    ]
+
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    words = [w.strip() for w in text.split() if w.strip()]
+
+    # Önce stop words çıkartılmış marka kökü
+    marka_words = [w for w in words if w not in stop_words and len(w) > 1]
+
+    # Eğer hepsi silindiyse ilk kelimeleri kullan
+    if not marka_words:
+        marka_words = [w for w in words if len(w) > 1]
+
+    return marka_words
+
+
+def firma_arama_sorgulari_uret(firma_adi):
+    words = firma_adi_sadelestir(firma_adi)
+    original = firma_adi_temizle(firma_adi)
+
+    sorgular = []
+
+    if original:
+        sorgular.extend([
+            f'"{original}"',
+            f'"{original}" iletişim',
+            f'"{original}" resmi web sitesi',
+        ])
+
+    if words:
+        marka1 = words[0]
+        marka2 = " ".join(words[:2])
+        marka3 = " ".join(words[:3])
+
+        for q in [marka3, marka2, marka1]:
+            if q and q not in sorgular:
+                sorgular.extend([
+                    f"{q} resmi web sitesi",
+                    f"{q} iletişim",
+                    f"{q} firma",
+                    f"{q} site:com.tr",
+                    f"{q} official website"
+                ])
+
+    # Tekilleştir
+    final = []
+    seen = set()
+    for q in sorgular:
+        k = q.lower().strip()
+        if k and k not in seen:
+            seen.add(k)
+            final.append(q)
+
+    return final[:12]
+
+
+def domain_adaylari_uret(firma_adi):
+    words = firma_adi_sadelestir(firma_adi)
+
+    aday_kokler = []
+
+    if words:
+        aday_kokler.append(words[0])
+        if len(words) >= 2:
+            aday_kokler.append(words[0] + words[1])
+            aday_kokler.append(words[0] + "-" + words[1])
+        if len(words) >= 3:
+            aday_kokler.append(words[0] + words[1] + words[2])
+
+    # Mükerrer temizle
+    clean_roots = []
+    seen = set()
+    for root in aday_kokler:
+        root = re.sub(r"[^a-z0-9-]", "", root)
+        if len(root) >= 3 and root not in seen:
+            seen.add(root)
+            clean_roots.append(root)
+
+    tlds = [".com.tr", ".com", ".net", ".com.tr/iletisim", ".com/iletisim"]
+
+    adaylar = []
+    for root in clean_roots:
+        for tld in tlds:
+            adaylar.append(f"https://www.{root}{tld}")
+            adaylar.append(f"https://{root}{tld}")
+
+    return adaylar[:30]
+
+
+def web_sitesi_dogrula(url):
+    """
+    Aday web sitesini hızlı kontrol eder.
+    """
+    try:
+        if not url_gecerli_mi(url):
+            return False
+
+        r = guvenli_get(url, timeout=8, referer="https://www.google.com/")
+
+        if r.status_code >= 400:
+            return False
+
+        text = (r.text or "")[:5000].lower()
+
+        # Çok bariz parking/satılık sayfaları ele
+        kotu = [
+            "domain is for sale", "buy this domain", "parked domain",
+            "this domain may be for sale", "godaddy", "sedo.com"
+        ]
+        if any(k in text for k in kotu):
+            return False
+
+        return True
+
+    except Exception:
+        return False
+
+
+def playwright_arama_linkleri_bul(query):
+    """
+    Requests ile arama sonuçları zayıf kalırsa Playwright ile DuckDuckGo HTML araması yapar.
+    """
+    if not PLAYWRIGHT_AKTIF:
+        return []
+
+    linkler = []
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+            )
+
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+                viewport={"width": 1300, "height": 900},
+                locale="tr-TR"
+            )
+
+            url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2500)
+
+            hrefs = page.evaluate("""
+                () => Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => a.getAttribute('href'))
+                    .filter(Boolean)
+                    .slice(0, 80)
+            """)
+
+            browser.close()
+
+        for href in hrefs:
+            clean = arama_linkini_temizle(href)
+            clean = normalize_url(clean)
+
+            if url_gecerli_mi(clean) and not istenmeyen_link_mi(clean):
+                linkler.append(clean)
+
+    except Exception as e:
+        logging.warning(f"Playwright arama hatasi: {query} - {str(e)}")
+
+    # Domain tekilleştir
+    final = []
+    seen = set()
+    for l in linkler:
+        d = domain_al(l)
+        if d and d not in seen:
+            seen.add(d)
+            final.append(l)
+
+    return final[:5]
+
+
+
 def firma_websitesi_bul(firma_adi):
     """
     Firma adından resmi web sitesini bulmaya çalışır.
-    V4.4:
-    - Bing /ck/a redirect linklerini çözer.
-    - DuckDuckGo uddg linklerini çözer.
-    - javascript:void(0) gibi sahte linkleri elemezden gelir.
+    V4.5:
+    - Firma adını sadeleştirir.
+    - Marka köküyle arama yapar.
+    - Bing / DuckDuckGo sonuçlarını çözer.
+    - Son çare domain tahmini yapar.
     """
     firma_adi_temiz = firma_adi_temizle(firma_adi)
+    sorgular = firma_arama_sorgulari_uret(firma_adi_temiz)
 
-    sorgular = [
-        quote_plus(f'"{firma_adi_temiz}" resmi web sitesi'),
-        quote_plus(f'"{firma_adi_temiz}" iletişim'),
-        quote_plus(f'"{firma_adi_temiz}" official website'),
-        quote_plus(f'{firma_adi_temiz} web sitesi')
-    ]
+    bulunan_linkler = []
 
-    arama_url_listesi = []
+    # 1) Requests ile Bing + DuckDuckGo araması
+    for sorgu_text in sorgular:
+        arama_url_listesi = [
+            f"https://www.bing.com/search?q={quote_plus(sorgu_text)}",
+            f"https://duckduckgo.com/html/?q={quote_plus(sorgu_text)}"
+        ]
 
-    for sorgu in sorgular:
-        arama_url_listesi.append(f"https://www.bing.com/search?q={sorgu}")
-        arama_url_listesi.append(f"https://duckduckgo.com/html/?q={sorgu}")
+        for arama_url in arama_url_listesi:
+            try:
+                time.sleep(random.uniform(0.8, 1.8))
+                res = guvenli_get(arama_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
 
-    for arama_url in arama_url_listesi:
-        try:
-            time.sleep(random.uniform(1.0, 2.2))
-            res = guvenli_get(arama_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
+                if res.status_code >= 400:
+                    continue
 
-            if res.status_code >= 400:
+                soup = BeautifulSoup(res.text, "html.parser")
+
+                for a in soup.select("li.b_algo h2 a[href], h2 a[href], a.result__a[href], a[href]"):
+                    href_raw = a.get("href", "").strip()
+                    href = arama_linkini_temizle(href_raw)
+                    href = normalize_url(href)
+
+                    if not url_gecerli_mi(href):
+                        continue
+
+                    if istenmeyen_link_mi(href):
+                        continue
+
+                    if any(href.lower().endswith(ext) for ext in [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".doc", ".docx", ".xls", ".xlsx"]):
+                        continue
+
+                    domain = domain_al(href)
+                    if not domain or len(domain) < 4:
+                        continue
+
+                    bulunan_linkler.append(href)
+
+            except Exception as e:
+                logging.warning(f"Arama hatasi: {firma_adi_temiz} - {str(e)}")
                 continue
 
-            soup = BeautifulSoup(res.text, "html.parser")
-            linkler = []
+        # İlk sorgularda iyi sonuç varsa fazla bekleme
+        if bulunan_linkler:
+            break
 
-            # Önce Bing organik sonuç başlık linkleri
-            for a in soup.select("li.b_algo h2 a[href], h2 a[href], a[href]"):
-                href_raw = a.get("href", "").strip()
-                href = arama_linkini_temizle(href_raw)
+    # 2) Requests sonuç vermezse Playwright DuckDuckGo araması
+    if not bulunan_linkler:
+        for sorgu_text in sorgular[:5]:
+            bulunan_linkler.extend(playwright_arama_linkleri_bul(sorgu_text))
+            if bulunan_linkler:
+                break
 
-                if not href:
-                    continue
+    # 3) Linkleri domain bazlı tekilleştir
+    temiz_linkler = []
+    gorulen_domain = set()
 
-                href = normalize_url(href)
+    for link in bulunan_linkler:
+        d = domain_al(link)
+        if d and d not in gorulen_domain:
+            gorulen_domain.add(d)
+            temiz_linkler.append(link)
 
-                if not url_gecerli_mi(href):
-                    continue
+    if temiz_linkler:
+        return temiz_linkler[0]
 
-                if istenmeyen_link_mi(href):
-                    continue
-
-                domain = domain_al(href)
-
-                if not domain or len(domain) < 4:
-                    continue
-
-                # Dosya, görsel, pdf vb. direkt sonuçları ele
-                if any(href.lower().endswith(ext) for ext in [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".doc", ".docx", ".xls", ".xlsx"]):
-                    continue
-
-                linkler.append(href)
-
-            # Domain mükerrerlerini temizle
-            temiz_linkler = []
-            gorulen_domain = set()
-
-            for link in linkler:
-                d = domain_al(link)
-                if d and d not in gorulen_domain:
-                    gorulen_domain.add(d)
-                    temiz_linkler.append(link)
-
-            if temiz_linkler:
-                return temiz_linkler[0]
-
-        except Exception as e:
-            logging.warning(f"Arama hatasi: {firma_adi_temiz} - {str(e)}")
-            continue
-
-    # Son çare: firma adından domain tahmini yap
-    # Bu sadece web bulunamadığında denenir; doğrulama başarılı olursa döner.
-    try:
-        domain_aday = firma_adi_temiz.lower()
-        domain_aday = domain_aday.replace("ı", "i").replace("ğ", "g").replace("ü", "u").replace("ş", "s").replace("ö", "o").replace("ç", "c")
-        domain_aday = re.sub(r"\b(a\.ş\.?|as|anonim|sanayi|san|ticaret|tic|ltd|şti|sti|limited|şirketi|sirketi|ve|ile)\b", " ", domain_aday)
-        domain_aday = re.sub(r"[^a-z0-9\s-]", " ", domain_aday)
-        parts = [p for p in domain_aday.split() if len(p) > 1]
-        base = "".join(parts[:3])
-
-        if len(base) >= 4:
-            for ext in [".com.tr", ".com", ".net", ".org"]:
-                test_url = f"https://www.{base}{ext}"
-                try:
-                    r = guvenli_get(test_url, timeout=6, referer="https://www.google.com/")
-                    if r.status_code < 400:
-                        return test_url
-                except Exception:
-                    continue
-    except Exception:
-        pass
+    # 4) Son çare: domain tahmini
+    for aday in domain_adaylari_uret(firma_adi_temiz):
+        if web_sitesi_dogrula(aday):
+            return aday
 
     return ""
 
