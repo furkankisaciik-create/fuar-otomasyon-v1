@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.3"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.4"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.3
+            Fuar Müşteri Otomasyonu V2.4
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.3</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.4</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -688,6 +688,25 @@ def tabloyu_hazirla():
     c.execute("CREATE INDEX IF NOT EXISTS idx_firma_adi ON sonuclar(firma_adi)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_fuar_etiketi ON sonuclar(fuar_etiketi)")
 
+    # Kalıcı işlem kuyruğu: Uygulama kapanırsa kalan firmalar kaybolmaz
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS islem_kuyrugu (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fuar_etiketi TEXT,
+            firma_adi TEXT,
+            durum TEXT DEFAULT 'Bekliyor',
+            deneme_sayisi INTEGER DEFAULT 0,
+            son_hata TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE(fuar_etiketi, firma_adi)
+        )
+    """)
+
+    c.execute("CREATE INDEX IF NOT EXISTS idx_kuyruk_fuar ON islem_kuyrugu(fuar_etiketi)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_kuyruk_durum ON islem_kuyrugu(durum)")
+
+
     # Eski veritabanları için güven skoru kolonlarını ekle
     yeni_kolonlar = {
         "web_guven": "INTEGER DEFAULT 0",
@@ -837,6 +856,7 @@ def arsiv_eksikleri_havuza_al(fuar_etiketi, tip="web"):
 
     mevcut = st.session_state.get("ana_liste", [])
     st.session_state["ana_liste"] = kaynak_firmalarini_normalize_et(mevcut + firmalar)
+    kuyruga_firma_ekle(fuar_etiketi, firmalar)
     return len(firmalar)
 
 
@@ -867,6 +887,151 @@ def arsivi_getir():
         df = pd.DataFrame()
     conn.close()
     return df
+
+
+
+
+def kuyruga_firma_ekle(fuar_etiketi, firmalar):
+    """
+    Bulunan tüm firmaları kalıcı işlem kuyruğuna yazar.
+    Böylece 139 firma bulunduysa 139'u da veritabanında bekleyen iş olur.
+    Sistem kapanırsa kalanlar kaybolmaz.
+    """
+    firmalar = kaynak_firmalarini_normalize_et(firmalar)
+    if not firmalar:
+        return 0
+
+    conn = db_baglan()
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    eklendi = 0
+    for firma in firmalar:
+        try:
+            c.execute("""
+                INSERT OR IGNORE INTO islem_kuyrugu
+                (fuar_etiketi, firma_adi, durum, deneme_sayisi, son_hata, created_at, updated_at)
+                VALUES (?, ?, 'Bekliyor', 0, '', ?, ?)
+            """, (fuar_etiketi, firma, now, now))
+            if c.rowcount > 0:
+                eklendi += 1
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+    return eklendi
+
+
+def kuyruk_ozeti_getir(fuar_etiketi):
+    conn = db_baglan()
+    try:
+        df = pd.read_sql_query("""
+            SELECT 
+                durum,
+                COUNT(*) AS adet
+            FROM islem_kuyrugu
+            WHERE fuar_etiketi = ?
+            GROUP BY durum
+        """, conn, params=(fuar_etiketi,))
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+
+    ozet = {"Bekliyor": 0, "İşleniyor": 0, "Tamamlandı": 0, "Hata": 0}
+    if not df.empty:
+        for _, row in df.iterrows():
+            ozet[str(row["durum"])] = int(row["adet"])
+    return ozet
+
+
+def kuyruk_bekleyen_firmalari_getir(fuar_etiketi, limit=50, sadece_islenmemis=True):
+    """
+    İşlem kuyruğundan sıradaki bekleyen/hatalı firmaları alır.
+    Arşivde daha önce işlenmiş olanları atlar.
+    """
+    islenmisler = islenmis_firmalari_getir(fuar_etiketi) if sadece_islenmemis else set()
+
+    conn = db_baglan()
+    try:
+        df = pd.read_sql_query("""
+            SELECT firma_adi
+            FROM islem_kuyrugu
+            WHERE fuar_etiketi = ?
+              AND durum IN ('Bekliyor', 'Hata')
+            ORDER BY 
+              CASE WHEN durum = 'Bekliyor' THEN 0 ELSE 1 END,
+              deneme_sayisi ASC,
+              id ASC
+            LIMIT ?
+        """, conn, params=(fuar_etiketi, int(limit) * 3))
+    except Exception:
+        df = pd.DataFrame()
+    conn.close()
+
+    if df.empty:
+        return []
+
+    firmalar = []
+    for f in df["firma_adi"].dropna().astype(str).tolist():
+        if sadece_islenmemis and f.lower().strip() in islenmisler:
+            kuyruk_durum_guncelle(fuar_etiketi, f, "Tamamlandı")
+            continue
+        firmalar.append(f)
+        if len(firmalar) >= limit:
+            break
+
+    return kaynak_firmalarini_normalize_et(firmalar)
+
+
+def kuyruk_durum_guncelle(fuar_etiketi, firma_adi, durum, hata=""):
+    conn = db_baglan()
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        if durum == "Hata":
+            c.execute("""
+                UPDATE islem_kuyrugu
+                SET durum = ?, son_hata = ?, deneme_sayisi = COALESCE(deneme_sayisi, 0) + 1, updated_at = ?
+                WHERE fuar_etiketi = ? AND firma_adi = ?
+            """, (durum, str(hata)[:500], now, fuar_etiketi, firma_adi))
+        else:
+            c.execute("""
+                UPDATE islem_kuyrugu
+                SET durum = ?, son_hata = ?, updated_at = ?
+                WHERE fuar_etiketi = ? AND firma_adi = ?
+            """, (durum, str(hata)[:500], now, fuar_etiketi, firma_adi))
+        conn.commit()
+    except Exception:
+        pass
+
+    conn.close()
+
+
+def kuyruk_toplu_durum_guncelle(fuar_etiketi, firmalar, durum):
+    for f in firmalar:
+        kuyruk_durum_guncelle(fuar_etiketi, f, durum)
+
+
+def kuyruk_sifirla(fuar_etiketi):
+    conn = db_baglan()
+    try:
+        conn.execute("DELETE FROM islem_kuyrugu WHERE fuar_etiketi = ?", (fuar_etiketi,))
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
+
+
+def kuyruk_bekleyenleri_havuza_yansit(fuar_etiketi):
+    """
+    Bekleyenleri session havuzuna da ekler. Görsel olarak kullanıcının kalanları görmesini sağlar.
+    """
+    bekleyen = kuyruk_bekleyen_firmalari_getir(fuar_etiketi, limit=10000, sadece_islenmemis=True)
+    mevcut = st.session_state.get("ana_liste", [])
+    st.session_state["ana_liste"] = kaynak_firmalarini_normalize_et(mevcut + bekleyen)
+    return len(bekleyen)
 
 
 
@@ -3167,7 +3332,7 @@ def websitesinden_iletisim_bul(web_url):
 
 
 # ============================================================
-# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.3
+# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.4
 # ============================================================
 
 def guvenli_int(v, default=0):
@@ -3411,7 +3576,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.3
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.4
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -3941,7 +4106,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.3.
+    PDF firma çıkarma motoru V2.4.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -3988,7 +4153,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.3.
+    Excel firma çıkarma motoru V2.4.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -4244,6 +4409,7 @@ with t1:
                     progress_bar.progress(1.0)
                     durum_kutusu.success("✅ URL tarama tamamlandı.")
                     adet = listeye_ekle(firmalar, listeyi_sifirla=listeyi_sifirla)
+                    kuyruga_firma_ekle(fuar_etiketi, firmalar)
 
                 if adet > 0:
                     st.success(f"✅ {adet} firma havuza aktarıldı.")
@@ -4276,6 +4442,7 @@ with t2:
 
             if st.button("📥 PDF Firmalarını Havuza Aktar", use_container_width=True):
                 adet = listeye_ekle(pdf_firmalar, listeyi_sifirla=listeyi_sifirla)
+                kuyruga_firma_ekle(fuar_etiketi, pdf_firmalar)
                 st.success(f"✅ {adet} firma havuza aktarıldı.")
                 st.rerun()
 
@@ -4303,6 +4470,7 @@ with t3:
 
             if st.button("📊 Excel Firmalarini Havuza Aktar", use_container_width=True):
                 adet = listeye_ekle(excel_firmalar, listeyi_sifirla=listeyi_sifirla)
+                kuyruga_firma_ekle(fuar_etiketi, excel_firmalar)
                 st.success(f"✅ {adet} firma havuza aktarıldı.")
                 st.rerun()
 
@@ -4330,6 +4498,7 @@ with t4:
         else:
             manuel_firmalar = [f.strip() for f in manuel_input.split("\n") if f.strip()]
             adet = listeye_ekle(manuel_firmalar, listeyi_sifirla=listeyi_sifirla)
+            kuyruga_firma_ekle(fuar_etiketi, manuel_firmalar)
             st.success(f"✅ {adet} firma havuza aktarıldı.")
             st.rerun()
 
@@ -4340,6 +4509,37 @@ with t4:
 
 st.divider()
 st.subheader(f"📋 Islem Havuzu: {len(st.session_state['ana_liste'])} Firma")
+
+try:
+    kuyruk_ozet = kuyruk_ozeti_getir(fuar_etiketi)
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Kuyruk Bekleyen", kuyruk_ozet.get("Bekliyor", 0))
+    q2.metric("Kuyruk İşleniyor", kuyruk_ozet.get("İşleniyor", 0))
+    q3.metric("Kuyruk Tamamlandı", kuyruk_ozet.get("Tamamlandı", 0))
+    q4.metric("Kuyruk Hata", kuyruk_ozet.get("Hata", 0))
+
+    c_devam, c_yansit, c_sifirla = st.columns([1, 1, 1])
+    with c_devam:
+        if st.button("🔁 Kaldığı Yerden Devam Et", use_container_width=True):
+            adet_devam = kuyruk_bekleyenleri_havuza_yansit(fuar_etiketi)
+            st.success(f"{adet_devam} bekleyen firma işlem havuzuna yansıtıldı.")
+            st.rerun()
+
+    with c_yansit:
+        if st.button("📌 Mevcut Havuzu Kuyruğa Kaydet", use_container_width=True):
+            adet_q = kuyruga_firma_ekle(fuar_etiketi, st.session_state.get("ana_liste", []))
+            st.success(f"{adet_q} yeni firma kalıcı kuyruğa eklendi.")
+            st.rerun()
+
+    with c_sifirla:
+        with st.expander("🧹 Kuyruğu Sıfırla"):
+            if st.button("Bu fuar kuyruğunu sıfırla"):
+                kuyruk_sifirla(fuar_etiketi)
+                st.success("Kuyruk sıfırlandı.")
+                st.rerun()
+except Exception as e:
+    st.warning(f"Kuyruk özeti gösterilemedi: {str(e)}")
+
 
 if st.session_state["ana_liste"]:
     havuz_df = pd.DataFrame({"Firma Adi": st.session_state["ana_liste"]})
@@ -4359,21 +4559,28 @@ if st.session_state["ana_liste"]:
     tara = st.button("⚡ BU PAKETİ TARA VE ARŞİVE KAYDET", use_container_width=True)
 
     if tara:
+        # Önce mevcut havuzu kalıcı kuyruğa yaz.
+        # Böylece sistem 139 firma bulduysa 139'u da kaybolmadan bekleyen iş olur.
         tum_firmalar = st.session_state["ana_liste"]
+        kuyruga_firma_ekle(fuar_etiketi, tum_firmalar)
 
-        if sadece_islenmemis:
-            islenmisler = islenmis_firmalari_getir(fuar_etiketi)
-            firmalar_filtreli = [f for f in tum_firmalar if f.lower().strip() not in islenmisler]
-        else:
-            firmalar_filtreli = tum_firmalar
+        # İşlenecek paket artık session'dan değil, kalıcı kuyruktan alınır.
+        paket_firmalar = kuyruk_bekleyen_firmalari_getir(
+            fuar_etiketi,
+            limit=paket_boyutu,
+            sadece_islenmemis=sadece_islenmemis
+        )
 
-        toplam_kalan = len(firmalar_filtreli)
+        toplam_kalan = len(kuyruk_bekleyen_firmalari_getir(
+            fuar_etiketi,
+            limit=10000,
+            sadece_islenmemis=sadece_islenmemis
+        ))
 
-        if toplam_kalan == 0:
+        if not paket_firmalar:
             st.success("✅ Bu fuar etiketi için işlem bekleyen firma kalmadı.")
             st.stop()
 
-        paket_firmalar = firmalar_filtreli[:paket_boyutu]
         toplam_firma = len(paket_firmalar)
         baslangic_tarama = time.time()
 
@@ -4387,15 +4594,18 @@ if st.session_state["ana_liste"]:
         web_bulunamadi = 0
         hata_sayisi = 0
 
+        kuyruk_toplu_durum_guncelle(fuar_etiketi, paket_firmalar, "İşleniyor")
+
         status_area.info(
             f"🚀 {SCAN_MODE} başladı. Bu pakette {toplam_firma} firma işlenecek. "
-            f"Toplam bekleyen: {toplam_kalan}. Paralel işlem: {max_workers}."
+            f"Kalıcı kuyrukta bekleyen toplam: {toplam_kalan}. Paralel işlem: {max_workers}."
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(derin_bilgi_bul, firma): firma for firma in paket_firmalar}
             pending = set(futures.keys())
             tamamlanan_sayi = 0
+            son_ilerleme = time.time()
 
             while pending:
                 done, pending = concurrent.futures.wait(
@@ -4411,14 +4621,26 @@ if st.session_state["ana_liste"]:
                         **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Paket:** {toplam_firma} firma &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Tamamlanan:** {tamamlanan_sayi}/{toplam_firma} &nbsp;&nbsp; | &nbsp;&nbsp;
-                        **Bekleyen:** {len(pending)} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Bekleyen thread:** {len(pending)} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Geçen:** {sure_formatla(gecen)}
                         """
                     )
                     status_area.info(
-                        f"🔎 Arka planda {max_workers} firma aynı anda taranıyor. Sonuçlar geldikçe ara kayıt yapılacak..."
+                        f"🔎 Arka planda {max_workers} firma aynı anda taranıyor. Sonuç geldikçe ara kayıt yapılacak."
                     )
+
+                    # 4 dakikadan uzun hiç ilerleme yoksa bu paketi durdur, kalanları tekrar Bekliyor yap
+                    if time.time() - son_ilerleme > 240:
+                        for fut in list(pending):
+                            firma_pending = futures.get(fut, "")
+                            if firma_pending:
+                                kuyruk_durum_guncelle(fuar_etiketi, firma_pending, "Bekliyor", "Watchdog: işlem çok uzun sürdü, tekrar kuyruğa alındı")
+                        st.warning("⚠️ Uzun süre ilerleme olmadığı için kalan işler tekrar bekleyen kuyruğa alındı. Kaldığı yerden devam edebilirsin.")
+                        break
+
                     continue
+
+                son_ilerleme = time.time()
 
                 for future in done:
                     firma = futures[future]
@@ -4438,24 +4660,28 @@ if st.session_state["ana_liste"]:
                         }
 
                     res["fuar_etiketi"] = fuar_etiketi
+
                     try:
                         kalite = enrichment_kalite_etiketi(res)
                         if res.get("durum"):
                             res["durum"] = f"{res.get('durum')} | Kalite: {kalite}"
                     except Exception:
                         pass
+
                     kayitlar.append(res)
 
                     try:
                         verileri_toplu_kaydet([res])
+                        kuyruk_durum_guncelle(fuar_etiketi, firma, "Tamamlandı")
                     except Exception as e:
+                        kuyruk_durum_guncelle(fuar_etiketi, firma, "Hata", str(e))
                         hata_kaydet(f"Ara kayıt hatası: {str(e)}")
 
-                    if res.get("durum") == "Tamamlandi":
+                    if res.get("durum") and "Tamamlandi" in res.get("durum"):
                         basarili += 1
                     elif "bulunamadi" in res.get("durum", "").lower():
                         web_bulunamadi += 1
-                    elif res.get("durum") == "Hata":
+                    elif "Hata" in res.get("durum", ""):
                         hata_sayisi += 1
 
                     oran = tamamlanan_sayi / toplam_firma
@@ -4468,11 +4694,13 @@ if st.session_state["ana_liste"]:
                         f"İşleniyor: {tamamlanan_sayi}/{toplam_firma} | Son tamamlanan firma: {firma}"
                     )
 
+                    kalan_kuyruk = kuyruk_ozeti_getir(fuar_etiketi).get("Bekliyor", 0)
+
                     metrik_area.markdown(
                         f"""
                         **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Bu paket:** {tamamlanan_sayi}/{toplam_firma} &nbsp;&nbsp; | &nbsp;&nbsp;
-                        **Toplam bekleyen:** {toplam_kalan} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Kuyrukta kalan:** {kalan_kuyruk} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Başarılı:** {basarili} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Web bulunamadı:** {web_bulunamadi} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Hata:** {hata_sayisi} &nbsp;&nbsp; | &nbsp;&nbsp;
@@ -4485,29 +4713,31 @@ if st.session_state["ana_liste"]:
                         sonuc_placeholder.dataframe(pd.DataFrame(kayitlar), use_container_width=True)
 
         st.session_state["son_batch_sonuclari"] = kayitlar
-        kalan_sonraki = max(toplam_kalan - toplam_firma, 0)
+        kuyruk_ozet_final = kuyruk_ozeti_getir(fuar_etiketi)
+        kalan_sonraki = kuyruk_ozet_final.get("Bekliyor", 0) + kuyruk_ozet_final.get("Hata", 0)
 
         st.session_state["son_islem_ozeti"] = (
             f"Paket tamamlandı. Bu paket: {len(kayitlar)} | "
             f"Başarılı: {basarili} | "
             f"Web bulunamadı: {web_bulunamadi} | "
             f"Hata: {hata_sayisi} | "
-            f"Kalan: {kalan_sonraki}"
+            f"Kuyrukta kalan: {kalan_sonraki}"
         )
 
         st.success("✅ Paket tamamlandı ve sonuçlar arşive ara kayıt olarak işlendi.")
         st.info(st.session_state["son_islem_ozeti"])
 
-        islenen_set = set([f.lower().strip() for f in paket_firmalar])
+        # İşlenenleri görsel havuzdan çıkar ama kalanları kalıcı kuyrukta tut
+        islenen_set = set([f.lower().strip() for f in paket_firmalar if f])
         st.session_state["ana_liste"] = [
             f for f in st.session_state["ana_liste"]
             if f.lower().strip() not in islenen_set
         ]
 
         if kalan_sonraki > 0:
-            st.warning(f"📦 Bu paket bitti. Kalan yaklaşık {kalan_sonraki} firma var. Devam etmek için tekrar 'BU PAKETİ TARA VE ARŞİVE KAYDET' butonuna bas.")
+            st.warning(f"📦 Bu paket bitti. Kuyrukta yaklaşık {kalan_sonraki} firma kaldı. Devam etmek için 'Kaldığı Yerden Devam Et' veya tekrar paket tarama butonuna bas.")
         else:
-            st.success("🎉 Tüm firmalar tamamlandı.")
+            st.success("🎉 Kalıcı kuyruktaki tüm firmalar tamamlandı.")
 
         st.rerun()
 
@@ -4647,6 +4877,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.3
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.4
 </div>
 """, unsafe_allow_html=True)
