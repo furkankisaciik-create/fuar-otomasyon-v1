@@ -853,18 +853,6 @@ def url_firma_sonuclarini_temizle(adaylar):
             seen.add(key)
             final.append(x)
 
-    if progress_callback:
-        try:
-            progress_callback({
-                "adim": "Katılımcı çekimi tamamlandı.",
-                "sayfa_no": 0,
-                "toplam_sayfa": 0,
-                "bulunan": len(final),
-                "gecen": time.time() - baslangic_zamani
-            })
-        except Exception:
-            pass
-
     return final
 
 
