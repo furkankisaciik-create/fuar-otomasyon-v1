@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.1"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.2"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.1
+            Fuar Müşteri Otomasyonu V2.2
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.1</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.2</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -676,12 +676,33 @@ def tabloyu_hazirla():
             kaynak TEXT,
             durum TEXT,
             hata TEXT,
-            tarih TEXT
+            tarih TEXT,
+            web_guven INTEGER DEFAULT 0,
+            mail_guven INTEGER DEFAULT 0,
+            telefon_guven INTEGER DEFAULT 0,
+            genel_guven INTEGER DEFAULT 0,
+            manuel_kontrol TEXT DEFAULT 'Evet'
         )
     """)
 
     c.execute("CREATE INDEX IF NOT EXISTS idx_firma_adi ON sonuclar(firma_adi)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_fuar_etiketi ON sonuclar(fuar_etiketi)")
+
+    # Eski veritabanları için güven skoru kolonlarını ekle
+    yeni_kolonlar = {
+        "web_guven": "INTEGER DEFAULT 0",
+        "mail_guven": "INTEGER DEFAULT 0",
+        "telefon_guven": "INTEGER DEFAULT 0",
+        "genel_guven": "INTEGER DEFAULT 0",
+        "manuel_kontrol": "TEXT DEFAULT 'Evet'"
+    }
+
+    for kolon, tip in yeni_kolonlar.items():
+        try:
+            c.execute(f"ALTER TABLE sonuclar ADD COLUMN {kolon} {tip}")
+        except Exception:
+            pass
+
 
     conn.commit()
     conn.close()
@@ -706,13 +727,19 @@ def verileri_toplu_kaydet(kayitlar):
             k.get("kaynak", ""),
             k.get("durum", ""),
             k.get("hata", ""),
-            tarih
+            tarih,
+            int(k.get("web_guven", 0) or 0),
+            int(k.get("mail_guven", 0) or 0),
+            int(k.get("telefon_guven", 0) or 0),
+            int(k.get("genel_guven", 0) or 0),
+            k.get("manuel_kontrol", "Evet")
         ))
 
     c.executemany("""
         INSERT INTO sonuclar 
-        (fuar_etiketi, firma_adi, web_adresi, telefon, eposta, kaynak, durum, hata, tarih)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (fuar_etiketi, firma_adi, web_adresi, telefon, eposta, kaynak, durum, hata, tarih,
+         web_guven, mail_guven, telefon_guven, genel_guven, manuel_kontrol)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
 
     conn.commit()
@@ -732,6 +759,11 @@ def arsivi_getir():
                 kaynak,
                 durum,
                 hata,
+                web_guven,
+                mail_guven,
+                telefon_guven,
+                genel_guven,
+                manuel_kontrol,
                 tarih
             FROM sonuclar 
             ORDER BY id DESC
@@ -3038,6 +3070,208 @@ def websitesinden_iletisim_bul(web_url):
     return sonuc
 
 
+
+# ============================================================
+# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.2
+# ============================================================
+
+def guvenli_int(v, default=0):
+    try:
+        return int(max(0, min(100, float(v))))
+    except Exception:
+        return default
+
+
+def web_guven_skoru_hesapla(firma_adi, web_url, kaynak_text=""):
+    """
+    Web sitesinin firmaya ait olma ihtimalini 0-100 arasında puanlar.
+    """
+    if not web_url or web_url == "Bulunamadi":
+        return 0
+
+    try:
+        base_score = domain_puanla(web_url, firma_adi, kaynak_text)
+    except Exception:
+        base_score = 0
+
+    score = 35
+
+    domain = domain_al(web_url)
+    root = turkce_karakter_temizle(domain.lower()) if domain else ""
+    text = turkce_karakter_temizle((kaynak_text or "").lower()[:12000])
+    words = firma_onemli_kelimeleri(firma_adi) if "firma_onemli_kelimeleri" in globals() else firma_adi_sadelestir(firma_adi)
+
+    if domain.endswith(".com.tr"):
+        score += 14
+    elif domain.endswith(".com"):
+        score += 8
+
+    domain_match_count = 0
+    text_match_count = 0
+
+    for w in words[:5]:
+        if len(w) < 3:
+            continue
+        if w in root:
+            domain_match_count += 1
+            score += 16
+        if w in text:
+            text_match_count += 1
+            score += 5
+
+    if len(words) >= 2:
+        combo = (words[0] + words[1]).replace("-", "")
+        if combo in root.replace("-", ""):
+            score += 26
+
+    if domain_match_count >= 2:
+        score += 15
+    elif domain_match_count == 1 and len(words) >= 2 and text_match_count == 0:
+        # ABBA.com gibi tek kelime yanılmalarına ceza
+        score -= 22
+
+    if base_score > 60:
+        score += 16
+    elif base_score > 25:
+        score += 8
+    elif base_score < 0:
+        score -= 20
+
+    if istenmeyen_link_mi(web_url):
+        score -= 60
+
+    return guvenli_int(score)
+
+
+def mail_guven_skoru_hesapla(mail_text, web_url):
+    """
+    Mailin web domainiyle uyumunu puanlar.
+    """
+    if not mail_text or mail_text == "Bulunamadi":
+        return 0
+
+    mails = temiz_mail_listesi(mail_text.split(",")) if isinstance(mail_text, str) else temiz_mail_listesi(mail_text)
+    if not mails:
+        return 0
+
+    domain = domain_al(web_url) if web_url and web_url != "Bulunamadi" else ""
+    domain_root = domain.replace("www.", "").lower()
+
+    best = 35
+    for mail in mails:
+        m_domain = mail.split("@")[-1].lower().strip()
+
+        score = 45
+
+        if domain_root and (m_domain == domain_root or m_domain.endswith(domain_root) or domain_root.endswith(m_domain)):
+            score += 45
+        elif domain_root:
+            # farklı domain ise ama generic mail değilse orta
+            score += 10
+
+        if mail.startswith(("info@", "sales@", "export@", "contact@", "iletisim@", "marketing@")):
+            score += 10
+
+        if any(x in mail for x in ["gmail.com", "hotmail.com", "outlook.com", "yahoo.com"]):
+            score -= 20
+
+        best = max(best, score)
+
+    return guvenli_int(best)
+
+
+def telefon_guven_skoru_hesapla(telefon_text):
+    """
+    Telefon formatına göre güven puanı üretir.
+    """
+    if not telefon_text or telefon_text == "Bulunamadi":
+        return 0
+
+    tels = temiz_telefon_listesi(telefon_text.split(",")) if isinstance(telefon_text, str) else temiz_telefon_listesi(telefon_text)
+    if not tels:
+        return 0
+
+    best = 40
+
+    for tel in tels:
+        rakam = re.sub(r"\D", "", tel)
+        score = 45
+
+        if len(rakam) == 10:
+            score += 20
+        elif len(rakam) == 11 and rakam.startswith("0"):
+            score += 25
+        elif 12 <= len(rakam) <= 13 and rakam.startswith("90"):
+            score += 30
+        elif 10 <= len(rakam) <= 15:
+            score += 15
+
+        if len(set(rakam)) <= 2:
+            score -= 40
+
+        best = max(best, score)
+
+    return guvenli_int(best)
+
+
+def genel_guven_hesapla(web_score, mail_score, tel_score):
+    """
+    Web daha ağır basar; mail ve telefon destekleyici sinyaldir.
+    """
+    score = (web_score * 0.48) + (mail_score * 0.32) + (tel_score * 0.20)
+    return guvenli_int(score)
+
+
+def manuel_kontrol_gerekir_mi(genel_score, web_score, mail_score, tel_score):
+    if genel_score >= 75:
+        return "Hayır"
+    if web_score >= 75 and (mail_score >= 65 or tel_score >= 65):
+        return "Hayır"
+    return "Evet"
+
+
+def sonuc_guven_skorlari_ekle(sonuc, firma_adi):
+    """
+    Enrichment sonucuna web/mail/telefon/genel güven skorları ekler.
+    """
+    web_url = sonuc.get("web_adresi", "")
+    kaynak_text = ""
+
+    # Kaynak URL okunabiliyorsa kısa içerik ile web güvenini güçlendir
+    try:
+        if web_url and web_url != "Bulunamadi":
+            r = guvenli_get(web_url, timeout=6, referer="https://www.google.com/")
+            if r.status_code < 400:
+                kaynak_text = temiz_metin((r.text or "")[:15000])
+    except Exception:
+        kaynak_text = ""
+
+    web_score = web_guven_skoru_hesapla(firma_adi, web_url, kaynak_text)
+    mail_score = mail_guven_skoru_hesapla(sonuc.get("eposta", ""), web_url)
+    tel_score = telefon_guven_skoru_hesapla(sonuc.get("telefon", ""))
+
+    genel_score = genel_guven_hesapla(web_score, mail_score, tel_score)
+    manuel = manuel_kontrol_gerekir_mi(genel_score, web_score, mail_score, tel_score)
+
+    sonuc["web_guven"] = web_score
+    sonuc["mail_guven"] = mail_score
+    sonuc["telefon_guven"] = tel_score
+    sonuc["genel_guven"] = genel_score
+    sonuc["manuel_kontrol"] = manuel
+
+    # Durum alanını daha açıklayıcı hale getir
+    try:
+        kalite = "Yüksek" if genel_score >= 75 else ("Orta" if genel_score >= 45 else "Düşük")
+        durum = sonuc.get("durum", "")
+        if "Güven:" not in durum:
+            sonuc["durum"] = f"{durum} | Güven: {genel_score}% | Kalite: {kalite} | Manuel: {manuel}"
+    except Exception:
+        pass
+
+    return sonuc
+
+
+
 def derin_bilgi_bul(firma_adi):
     sonuc = {
         "firma_adi": firma_adi,
@@ -3061,6 +3295,7 @@ def derin_bilgi_bul(firma_adi):
 
         if not web:
             sonuc["durum"] = "Web sitesi bulunamadi"
+            sonuc = sonuc_guven_skorlari_ekle(sonuc, firma_adi)
             return sonuc
 
         iletisim = websitesinden_iletisim_bul(web)
@@ -3068,18 +3303,20 @@ def derin_bilgi_bul(firma_adi):
         sonuc.update(iletisim)
         sonuc["firma_adi"] = firma_adi
 
+        sonuc = sonuc_guven_skorlari_ekle(sonuc, firma_adi)
         return sonuc
 
     except Exception as e:
         sonuc["durum"] = "Hata"
         sonuc["hata"] = str(e)
         logging.error(f"Derin bilgi hatasi: {firma_adi} - {str(e)}")
+        sonuc = sonuc_guven_skorlari_ekle(sonuc, firma_adi)
         return sonuc
 
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.1
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.2
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -3609,7 +3846,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.1.
+    PDF firma çıkarma motoru V2.2.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -3656,7 +3893,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.1.
+    Excel firma çıkarma motoru V2.2.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -4247,6 +4484,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.1
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.2
 </div>
 """, unsafe_allow_html=True)
