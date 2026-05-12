@@ -345,7 +345,7 @@ def firma_gibi_gorunuyor_mu(item):
         "musiad", "müsiad", "fuar", "expo", "web sitesi", "web site",
         "kvkk", "politika", "form", "bilet", "ulaşım", "ulasim",
         "program", "etkinlik", "salon", "harita", "iletişim", "iletisim",
-        "dijital teknolojiler", "enerji ve çevre", "enerji ve cevre",
+        "dijital teknolojiler", "enerji ve çevre", "enerji ve cevre", "hizmetler ve finans", "metal ve maden", "tekstil deri ve hazır giyim", "tekstil deri ve hazir giyim", "hizmetler ve finans", "metal ve maden", "tekstil deri ve hazır giyim", "tekstil deri ve hazir giyim",
         "gıda, tarım ve hayvancılık", "gida, tarim ve hayvancilik",
         "sektör", "sektor", "kategori", "ürün grubu", "urun grubu"
     ]
@@ -373,14 +373,140 @@ def firma_gibi_gorunuyor_mu(item):
     if any(m in f" {low} " for m in company_markers):
         return True
 
-    # Tamamen büyük harfli ve 2+ kelimeli satırlar firma olabilir
-    letters = re.sub(r"[^A-Za-zÇĞİÖŞÜçğıöşü]", "", text)
-    if len(letters) >= 6:
-        upper_ratio = sum(1 for c in letters if c.isupper()) / max(len(letters), 1)
-        if upper_ratio > 0.70 and len(text.split()) >= 2:
-            return True
+    # Birleşik yazımları da yakala: LTDŞTİ, AŞ, SANVE TIC gibi bozuk OCR/HTML halleri
+    compact = low.replace(".", "").replace(" ", "")
+    compact_markers = [
+        "ltdşti", "ltdsti", "limitedşirket", "limitedsirket",
+        "anonimşirket", "anonimsirket", "sanvetic", "sanayiveticaret",
+        "aş", "as"
+    ]
+    if any(m in compact for m in compact_markers):
+        return True
 
+    # URL taramasinda kategori / baslik karismasin diye
+    # sadece sirket unvani isareti tasiyan metinler firma kabul edilir.
     return False
+
+
+
+def musiad_firma_adi_temizle(text):
+    """
+    MÜSİAD sayfasında satırlar çoğu zaman:
+    FIRMA ADI + SEKTÖR + ŞEHİR
+    şeklinde geliyor. Bu fonksiyon sondaki sektör/şehir parçalarını temizler.
+    """
+    if not text:
+        return ""
+
+    t = firma_adi_temizle(text)
+
+    sehirler = [
+        "ADANA", "ADIYAMAN", "AFYONKARAHİSAR", "AĞRI", "AMASYA", "ANKARA", "ANTALYA",
+        "ARTVİN", "AYDIN", "BALIKESİR", "BİLECİK", "BİNGÖL", "BİTLİS", "BOLU",
+        "BURDUR", "BURSA", "ÇANAKKALE", "ÇANKIRI", "ÇORUM", "DENİZLİ", "DİYARBAKIR",
+        "EDİRNE", "ELAZIĞ", "ERZİNCAN", "ERZURUM", "ESKİŞEHİR", "GAZİANTEP",
+        "GİRESUN", "GÜMÜŞHANE", "HAKKARİ", "HATAY", "ISPARTA", "MERSİN", "İSTANBUL",
+        "İZMİR", "KARS", "KASTAMONU", "KAYSERİ", "KIRKLARELİ", "KIRŞEHİR",
+        "KOCAELİ", "KONYA", "KÜTAHYA", "MALATYA", "MANİSA", "KAHRAMANMARAŞ",
+        "MARDİN", "MUĞLA", "MUŞ", "NEVŞEHİR", "NİĞDE", "ORDU", "RİZE", "SAKARYA",
+        "SAMSUN", "SİİRT", "SİNOP", "SİVAS", "TEKİRDAĞ", "TOKAT", "TRABZON",
+        "TUNCELİ", "ŞANLIURFA", "UŞAK", "VAN", "YOZGAT", "ZONGULDAK", "AKSARAY",
+        "BAYBURT", "KARAMAN", "KIRIKKALE", "BATMAN", "ŞIRNAK", "BARTIN", "ARDAHAN",
+        "IĞDIR", "YALOVA", "KARABÜK", "KİLİS", "OSMANİYE", "DÜZCE"
+    ]
+
+    sektorler = [
+        "BASIM YAYIN MEDYA",
+        "DİJİTAL TEKNOLOJİLER",
+        "ENERJİ VE ÇEVRE",
+        "GIDA TARIM VE HAYVANCILIK",
+        "GIDA, TARIM VE HAYVANCILIK",
+        "HİZMETLER VE FİNANS",
+        "MAKİNE",
+        "METAL VE MADEN",
+        "MOBİLYA",
+        "OTOMOTİV",
+        "SAĞLIK",
+        "TEKSTİL DERİ VE HAZIR GİYİM",
+        "TURİZM",
+        "İNŞAAT VE YAPI MALZEMELERİ",
+        "KİMYA",
+        "LOJİSTİK",
+        "SAVUNMA SANAYİ",
+        "ELEKTRİK ELEKTRONİK",
+        "AMBALAJ"
+    ]
+
+    # Sondaki şehir bilgisini temizle
+    for city in sehirler:
+        pattern = r"\s+" + re.escape(city) + r"$"
+        t = re.sub(pattern, "", t, flags=re.IGNORECASE).strip()
+
+    # Sondaki sektör bilgisini temizle
+    for sektor in sektorler:
+        pattern = r"\s+" + re.escape(sektor) + r"$"
+        t = re.sub(pattern, "", t, flags=re.IGNORECASE).strip()
+
+    # Bazen önce sektör sonra şehir temizlenince tekrar şehir/sektör kalabilir
+    for city in sehirler:
+        pattern = r"\s+" + re.escape(city) + r"$"
+        t = re.sub(pattern, "", t, flags=re.IGNORECASE).strip()
+
+    for sektor in sektorler:
+        pattern = r"\s+" + re.escape(sektor) + r"$"
+        t = re.sub(pattern, "", t, flags=re.IGNORECASE).strip()
+
+    return t
+
+
+def sadece_firma_unvani_mi(text):
+    """
+    URL sonuçlarında kategori/menü değil, gerçek firma adı kalsın.
+    """
+    if not text:
+        return False
+
+    low = text.lower()
+
+    yasak = [
+        "foto galeri", "genel bakış", "genel bakis", "gizlilik", "medya",
+        "dijital teknolojiler", "enerji ve çevre", "enerji ve cevre",
+        "gıda, tarım ve hayvancılık", "gida, tarim ve hayvancilik",
+        "hizmetler ve finans", "metal ve maden", "tekstil deri",
+        "hazır stant", "hazir stant", "musiad", "müsiad", "katılımcı", "katilimci"
+    ]
+
+    if any(y in low for y in yasak):
+        return False
+
+    markerlar = [
+        "a.ş", "a.s", " aş", " as ", "anonim", "san", "sanayi",
+        "tic", "ticaret", "ltd", "şti", "sti", "limited", "şirket", "sirket",
+        "co.", "inc", "llc", "gmbh", "group", "holding"
+    ]
+
+    return any(m in f" {low} " for m in markerlar)
+
+
+def url_firma_sonuclarini_temizle(adaylar):
+    temiz = []
+    for a in adaylar:
+        t = musiad_firma_adi_temizle(a)
+        if sadece_firma_unvani_mi(t):
+            temiz.append(t)
+
+    # Son genel temizlik ve mükerrer silme
+    temiz = firma_listesi_filtrele(temiz)
+
+    final = []
+    seen = set()
+    for x in temiz:
+        key = x.lower().strip()
+        if key not in seen:
+            seen.add(key)
+            final.append(x)
+
+    return final
 
 
 # ============================================================
@@ -404,7 +530,7 @@ def firma_listesi_filtrele(adaylar):
         "foto galeri", "genel bakış", "genel bakis", "gizlilik politikası",
         "gizlilik politikasi", "hazır stantlar", "hazir stantlar",
         "medya materyalleri", "medya partnerleri",
-        "dijital teknolojiler", "enerji ve çevre", "enerji ve cevre",
+        "dijital teknolojiler", "enerji ve çevre", "enerji ve cevre", "hizmetler ve finans", "metal ve maden", "tekstil deri ve hazır giyim", "tekstil deri ve hazir giyim", "hizmetler ve finans", "metal ve maden", "tekstil deri ve hazır giyim", "tekstil deri ve hazir giyim",
         "gıda, tarım ve hayvancılık", "gida, tarim ve hayvancilik"
     ]
 
@@ -451,6 +577,7 @@ def firma_listesi_filtrele(adaylar):
             sonuc.append(item)
 
     return sorted(sonuc)
+
 
 
 # ============================================================
@@ -516,8 +643,7 @@ def firmalari_url_den_cek(url):
         if firma_gibi_gorunuyor_mu(temiz):
             adaylar.append(temiz)
 
-    temizler = firma_listesi_filtrele(adaylar)
-    return [x for x in temizler if firma_gibi_gorunuyor_mu(x)]
+    return url_firma_sonuclarini_temizle(adaylar)
 
 
 def firmalari_url_den_cek_playwright(url):
@@ -590,8 +716,7 @@ def firmalari_url_den_cek_playwright(url):
         if firma_gibi_gorunuyor_mu(temiz):
             adaylar.append(temiz)
 
-    temizler = firma_listesi_filtrele(adaylar)
-    return [x for x in temizler if firma_gibi_gorunuyor_mu(x)]
+    return url_firma_sonuclarini_temizle(adaylar)
 
 
 # ============================================================
