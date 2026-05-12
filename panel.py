@@ -583,9 +583,12 @@ def firma_listesi_filtrele(adaylar):
 
 def musiad_katilimci_listesi_cek(url):
     """
-    MÜSİAD Expo özel motoru.
-    Katılımcı tablosundaki tüm sayfaları Sonraki butonu ile dolaşır.
-    Sadece Katılımcı sütunundaki firma adlarını alır.
+    MÜSİAD Expo özel motoru V3.9.
+    Mantık:
+    - Tablo güvenilir kabul edilir.
+    - Sadece Katılımcı sütununun ilk hücresi alınır.
+    - A.Ş. / LTD şartı aranmaz; çünkü bazı gerçek firmalar sadece marka adı olarak yazılmış.
+    - Sonraki butonuyla tüm sayfalar dolaşılır.
     """
     if not PLAYWRIGHT_AKTIF:
         raise Exception("Playwright aktif değil. MÜSİAD özel motoru çalışamaz.")
@@ -606,15 +609,15 @@ def musiad_katilimci_listesi_cek(url):
 
         page = browser.new_page(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
-            viewport={"width": 1400, "height": 900},
+            viewport={"width": 1400, "height": 950},
             locale="tr-TR"
         )
 
-        page.goto(url, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(5000)
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(7000)
 
-        # Tablo yüklenene kadar kısa denemeler
-        for _ in range(10):
+        # Tablo gelene kadar bekle
+        for _ in range(20):
             try:
                 if page.locator("table tbody tr").count() > 0:
                     break
@@ -622,79 +625,141 @@ def musiad_katilimci_listesi_cek(url):
                 pass
             page.wait_for_timeout(1000)
 
-        sayfa_sayisi = 0
-        max_sayfa = 50
+        max_sayfa = 40
+        sayfa_no = 0
+        onceki_sayfa_imzasi = ""
 
-        while sayfa_sayisi < max_sayfa:
-            sayfa_sayisi += 1
-            page.wait_for_timeout(1200)
+        while sayfa_no < max_sayfa:
+            sayfa_no += 1
+            page.wait_for_timeout(1500)
 
-            # Tablo satırlarından ilk hücreyi yani Katılımcı sütununu al
+            # Tablo satırlarını oku
             rows = page.locator("table tbody tr")
             row_count = rows.count()
 
+            sayfa_firmalari = []
+
             for i in range(row_count):
                 try:
-                    first_cell = rows.nth(i).locator("td").nth(0).inner_text(timeout=3000)
-                    firma = firma_adi_temizle(first_cell)
+                    cells = rows.nth(i).locator("td")
+                    if cells.count() == 0:
+                        continue
+
+                    # Katılımcı sütunu: ilk hücre
+                    firma = cells.nth(0).inner_text(timeout=3000)
+                    firma = firma_adi_temizle(firma)
                     firma = musiad_firma_adi_temizle(firma)
-                    if firma and sadece_firma_unvani_mi(firma):
-                        firmalar.append(firma)
+
+                    # Tablo güvenilir olduğu için strict şirket unvanı aramıyoruz.
+                    # Sadece boş, başlık, kategori ve çok kısa metinleri atıyoruz.
+                    low = firma.lower()
+                    yasak = [
+                        "katılımcı", "katilimci", "sektör", "sektor", "şehir", "sehir",
+                        "foto galeri", "genel bakış", "gizlilik", "medya", "musiad", "müsiad",
+                        "sonraki", "önceki", "onceki"
+                    ]
+
+                    if not firma:
+                        continue
+                    if len(firma) < 3 or len(firma) > 100:
+                        continue
+                    if any(y in low for y in yasak):
+                        continue
+                    if re.fullmatch(r"[\d\s\-\+\(\):\.]+", firma):
+                        continue
+
+                    sayfa_firmalari.append(firma)
+                    firmalar.append(firma)
+
                 except Exception:
                     continue
 
-            # Sonraki butonunu bul
-            next_candidates = [
-                "button:has-text('Sonraki')",
-                "a:has-text('Sonraki')",
-                "button:has-text('Next')",
-                "a:has-text('Next')",
-                "[aria-label*='Sonraki']",
-                "[aria-label*='Next']"
-            ]
+            # Sayfa değişimi kontrolü için imza
+            sayfa_imzasi = "|".join(sayfa_firmalari[:3])
 
-            next_button = None
-            for sel in next_candidates:
-                try:
-                    loc = page.locator(sel).last
-                    if loc.count() > 0 and loc.is_visible():
-                        next_button = loc
-                        break
-                except Exception:
-                    continue
-
-            if next_button is None:
+            # Eğer hiç satır yoksa çık
+            if not sayfa_firmalari:
                 break
 
+            # Sonraki butonuna bas
             try:
-                disabled_attr = next_button.get_attribute("disabled")
-                aria_disabled = next_button.get_attribute("aria-disabled")
-                class_attr = next_button.get_attribute("class") or ""
+                # Önce standart Playwright selectorleri
+                clicked = False
 
-                if disabled_attr is not None or aria_disabled == "true" or "disabled" in class_attr.lower():
-                    break
+                selectors = [
+                    "button:has-text('Sonraki')",
+                    "a:has-text('Sonraki')",
+                    "button:has-text('Next')",
+                    "a:has-text('Next')"
+                ]
 
-                onceki_ilk = ""
-                try:
-                    if row_count > 0:
-                        onceki_ilk = rows.nth(0).locator("td").nth(0).inner_text(timeout=1000)
-                except Exception:
-                    pass
-
-                next_button.click(timeout=5000)
-                page.wait_for_timeout(2500)
-
-                # Sayfanın değişmesini bekle
-                for _ in range(10):
+                for sel in selectors:
                     try:
-                        yeni_rows = page.locator("table tbody tr")
-                        if yeni_rows.count() > 0:
-                            yeni_ilk = yeni_rows.nth(0).locator("td").nth(0).inner_text(timeout=1000)
-                            if yeni_ilk != onceki_ilk:
+                        locs = page.locator(sel)
+                        count = locs.count()
+                        if count > 0:
+                            btn = locs.nth(count - 1)
+                            if btn.is_visible():
+                                disabled_attr = btn.get_attribute("disabled")
+                                aria_disabled = btn.get_attribute("aria-disabled")
+                                class_attr = btn.get_attribute("class") or ""
+
+                                if disabled_attr is not None or aria_disabled == "true" or "disabled" in class_attr.lower():
+                                    clicked = False
+                                    break
+
+                                btn.scroll_into_view_if_needed(timeout=3000)
+                                page.wait_for_timeout(500)
+                                btn.click(timeout=5000)
+                                clicked = True
                                 break
                     except Exception:
+                        continue
+
+                # Selector tıklamazsa JS ile text'e göre buton bul ve tıkla
+                if not clicked:
+                    clicked = page.evaluate("""
+                        () => {
+                            const els = Array.from(document.querySelectorAll('button, a'));
+                            const btn = els.find(el => {
+                                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                                const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || (el.className || '').toString().toLowerCase().includes('disabled');
+                                return !disabled && (txt.includes('sonraki') || txt.includes('next'));
+                            });
+                            if (btn) {
+                                btn.scrollIntoView({block: 'center'});
+                                btn.click();
+                                return true;
+                            }
+                            return false;
+                        }
+                    """)
+
+                if not clicked:
+                    break
+
+                # Yeni sayfanın yüklenmesini bekle
+                degisti = False
+                for _ in range(15):
+                    page.wait_for_timeout(1000)
+                    try:
+                        yeni_rows = page.locator("table tbody tr")
+                        yeni_count = yeni_rows.count()
+                        yeni_firmalar = []
+                        for j in range(min(3, yeni_count)):
+                            txt = yeni_rows.nth(j).locator("td").nth(0).inner_text(timeout=1000)
+                            yeni_firmalar.append(firma_adi_temizle(txt))
+                        yeni_imza = "|".join(yeni_firmalar)
+                        if yeni_imza and yeni_imza != sayfa_imzasi and yeni_imza != onceki_sayfa_imzasi:
+                            degisti = True
+                            break
+                    except Exception:
                         pass
-                    page.wait_for_timeout(800)
+
+                onceki_sayfa_imzasi = sayfa_imzasi
+
+                if not degisti:
+                    break
 
             except Exception:
                 break
@@ -705,12 +770,15 @@ def musiad_katilimci_listesi_cek(url):
     final = []
     seen = set()
     for f in firmalar:
+        f = firma_adi_temizle(f)
         key = f.lower().strip()
-        if key not in seen:
+        if key and key not in seen:
             seen.add(key)
             final.append(f)
 
     return final
+
+
 
 
 # ============================================================
