@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.5"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.6"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V1.5
+            Fuar Müşteri Otomasyonu V1.6
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.5</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.6</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -3081,22 +3081,252 @@ def derin_bilgi_bul(firma_adi):
 # PDF / EXCEL / MANUEL
 # ============================================================
 
+
+def pdf_satir_temizle(line):
+    """
+    PDF kataloglarından gelen satırları firma adı adayı haline getirir.
+    Ülke, salon, stand, booth, hall, web/mail/telefon gibi kuyrukları temizler.
+    """
+    if not line:
+        return ""
+
+    t = firma_adi_temizle(line)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # E-posta, web, telefon içeren satırlar firma adı değildir
+    if re.search(r"https?://|www\.|@", t.lower()):
+        return ""
+
+    # Çok belirgin katalog kelimelerinden sonrasını kes
+    t = re.split(
+        r"\bHall\b|\bBooth\b|\bStand\b|\bStant\b|\bSalon\b|\bPavilion\b|\bCountry\b|\bÜlke\b|\bUlke\b|\bAddress\b|\bAdres\b|\bPhone\b|\bTel\b|\bE-mail\b|\bEmail\b",
+        t,
+        flags=re.IGNORECASE
+    )[0].strip()
+
+    # Firma adı + ülke şeklinde gelenlerde ülkeyi kes
+    ulkeler = [
+        "Türkiye", "Turkiye", "Turkey", "Germany", "Almanya", "Italy", "İtalya",
+        "China", "Çin", "Spain", "İspanya", "France", "Fransa", "India", "Hindistan",
+        "USA", "United States", "United Kingdom", "UK", "England", "İngiltere",
+        "Netherlands", "Hollanda", "Poland", "Polonya", "Belgium", "Belçika",
+        "Austria", "Avusturya", "Switzerland", "İsviçre", "Iran", "İran",
+        "Korea", "South Korea", "Japan", "Japonya", "Taiwan", "Tayvan"
+    ]
+
+    low = t.lower()
+    earliest = None
+    for ulke in ulkeler:
+        idx = low.find(ulke.lower())
+        if idx > 2:
+            if earliest is None or idx < earliest:
+                earliest = idx
+
+    if earliest is not None:
+        t = t[:earliest].strip()
+
+    t = t.strip(" -–|•,:;")
+
+    return t
+
+
+def pdf_firma_adayi_mi(text):
+    """
+    PDF içinden gelen satırın firma adı olup olmadığını değerlendirir.
+    Çok katı değil; kataloglarda marka adları tek kelime olabilir.
+    """
+    if not text:
+        return False
+
+    t = pdf_satir_temizle(text)
+    low = t.lower()
+
+    if len(t) < 3 or len(t) > 120:
+        return False
+
+    if re.fullmatch(r"[\d\s\-\+\(\):\./]+", t):
+        return False
+
+    if re.search(r"https?://|www\.|@", low):
+        return False
+
+    yasak = [
+        "exhibitor list", "katılımcı listesi", "katilimci listesi", "index",
+        "contents", "içindekiler", "icindekiler", "page", "sayfa",
+        "hall", "booth", "stand", "stant", "salon", "country", "ülke", "ulke",
+        "address", "adres", "phone", "telephone", "telefon", "email", "e-mail",
+        "website", "web site", "product", "products", "ürün", "urun",
+        "category", "kategori", "sector", "sektör", "sektor",
+        "organizer", "visitor", "ziyaretçi", "ziyaretci",
+        "fuar", "expo", "fair", "exhibition", "detaylı incele", "detayli incele"
+    ]
+
+    if any(y in low for y in yasak):
+        return False
+
+    if not re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]", t):
+        return False
+
+    # Firma unvanı varsa güçlü aday
+    markerlar = [
+        "ltd", "şti", "sti", "a.ş", "a.s", "anonim", "limited", "sanayi", "san.",
+        "ticaret", "tic.", "company", "co.", "inc", "llc", "gmbh", "srl", "spa",
+        "group", "holding", "corporation", "corp"
+    ]
+    if any(m in low for m in markerlar):
+        return True
+
+    # Tamamı büyük harf ve 1-6 kelime arası ise kataloglarda firma olabilir
+    letters = re.sub(r"[^A-Za-zÇĞİÖŞÜçğıöşü]", "", t)
+    if len(letters) >= 4:
+        upper_ratio = sum(1 for c in letters if c.isupper()) / max(len(letters), 1)
+        if upper_ratio >= 0.65 and 1 <= len(t.split()) <= 8:
+            return True
+
+    # Normal başlık formatında 2-6 kelime arası ise aday olabilir
+    if 1 <= len(t.split()) <= 7:
+        return True
+
+    return False
+
+
+def pdf_tablolardan_firma_cek(pdf):
+    """
+    PDF tablolarındaki ilk uygun kolonlardan firma adı çıkarır.
+    """
+    adaylar = []
+
+    for page in pdf.pages:
+        try:
+            tables = page.extract_tables()
+        except Exception:
+            tables = []
+
+        for table in tables or []:
+            if not table:
+                continue
+
+            for row in table:
+                if not row:
+                    continue
+
+                # İlk 3 hücre firma adı olabilir; çoğu katalogda ilk kolon firma adıdır
+                for cell in row[:3]:
+                    cell = pdf_satir_temizle(cell)
+                    if pdf_firma_adayi_mi(cell):
+                        adaylar.append(cell)
+                        break
+
+    return adaylar
+
+
+def pdf_metinden_firma_cek(pdf):
+    """
+    PDF düz metinlerinden satır satır firma adı çıkarır.
+    """
+    adaylar = []
+
+    for page in pdf.pages:
+        try:
+            page_text = page.extract_text()
+        except Exception:
+            page_text = None
+
+        if not page_text:
+            continue
+
+        # Satır bazlı okuma
+        lines = page_text.split("\n")
+
+        for line in lines:
+            temiz = pdf_satir_temizle(line)
+            if pdf_firma_adayi_mi(temiz):
+                adaylar.append(temiz)
+
+        # Bazı PDF'lerde firma bilgileri blok halinde olur; nokta/ayraçlardan da dene
+        text = re.sub(r"\s{2,}", "\n", page_text)
+        blocks = re.split(r"\n|•|\||;", text)
+
+        for block in blocks:
+            temiz = pdf_satir_temizle(block)
+            if pdf_firma_adayi_mi(temiz):
+                adaylar.append(temiz)
+
+    return adaylar
+
+
+def pdf_adaylari_son_temizle(adaylar):
+    """
+    PDF'den çıkan adayları mükerrer ve çöp kayıtlardan arındırır.
+    """
+    final = []
+    seen = set()
+
+    for a in adaylar:
+        a = pdf_satir_temizle(a)
+
+        if not pdf_firma_adayi_mi(a):
+            continue
+
+        # Çok sık çıkan anlamsız kısa kelimeleri ele
+        low = a.lower().strip()
+        if low in ["turkey", "türkiye", "turkiye", "company", "firma", "hall", "booth"]:
+            continue
+
+        key = low
+        if key not in seen:
+            seen.add(key)
+            final.append(a)
+
+    return final
+
+
+
 def pdf_firmalari_oku(pdf_file):
-    firmalar = []
+    """
+    PDF firma çıkarma motoru V1.6.
+    - Önce tabloları okur.
+    - Sonra düz metin satırlarını okur.
+    - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
+    - Taranmış görsel PDF'lerde OCR olmadığı için metin yoksa uyarı verir.
+    """
+    adaylar = []
+    sayfa_sayisi = 0
+    metinli_sayfa = 0
 
     try:
         with pdfplumber.open(pdf_file) as pdf:
+            sayfa_sayisi = len(pdf.pages)
+
+            # 1) Tablolar
+            tablo_adaylari = pdf_tablolardan_firma_cek(pdf)
+            adaylar.extend(tablo_adaylari)
+
+            # 2) Metin satırları
+            metin_adaylari = pdf_metinden_firma_cek(pdf)
+            adaylar.extend(metin_adaylari)
+
+            # Metin var mı kontrolü
             for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    for line in page_text.split("\n"):
-                        temiz = firma_adi_temizle(line)
-                        if temiz:
-                            firmalar.append(temiz)
+                try:
+                    txt = page.extract_text()
+                    if txt and len(txt.strip()) > 20:
+                        metinli_sayfa += 1
+                except Exception:
+                    pass
+
     except Exception as e:
         raise Exception(f"PDF okuma hatasi: {str(e)}")
 
-    return firma_listesi_filtrele(firmalar)
+    firmalar = pdf_adaylari_son_temizle(adaylar)
+
+    if sayfa_sayisi > 0 and metinli_sayfa == 0:
+        raise Exception(
+            "Bu PDF metin içermiyor gibi görünüyor. Büyük ihtimalle taranmış/görsel PDF. "
+            "Bu durumda OCR motoru gerekir."
+        )
+
+    return firmalar
 
 
 def excel_firmalari_oku(excel_file):
@@ -3321,7 +3551,7 @@ with t1:
                     adet = listeye_ekle(firmalar, listeyi_sifirla=listeyi_sifirla)
 
                 if adet > 0:
-                    st.success(f"✅ {adet} firma havuza aktarildi.")
+                    st.success(f"✅ {adet} firma havuza aktarıldı.")
                     st.rerun()
                 else:
                     st.error("Bu URL'den firma adi cikarilamadi. Site veriyi gizli API ile cekiyor veya bot erisimini kisitliyor olabilir.")
@@ -3336,22 +3566,22 @@ with t1:
 # ============================================================
 
 with t2:
-    st.subheader("📄 PDF Katilimci Katalogu Analiz")
-    pdf_file = st.file_uploader("Katalog PDF'i yukleyin", type=["pdf"])
+    st.subheader("📄 PDF Katılımcı Kataloğu Analiz")
+    pdf_file = st.file_uploader("Katılımcı listesi / katalog PDF'i yükleyin", type=["pdf"])
 
     if pdf_file:
         try:
             with st.spinner("PDF okunuyor..."):
                 pdf_firmalar = pdf_firmalari_oku(pdf_file)
 
-            st.info(f"PDF icinde {len(pdf_firmalar)} olasi firma adi bulundu.")
+            st.info(f"PDF içinde {len(pdf_firmalar)} olası firma adı bulundu.")
 
             if pdf_firmalar:
                 st.dataframe(pd.DataFrame({"Firma Adi": pdf_firmalar}), use_container_width=True)
 
-            if st.button("📥 PDF Firmalarini Havuza Aktar", use_container_width=True):
+            if st.button("📥 PDF Firmalarını Havuza Aktar", use_container_width=True):
                 adet = listeye_ekle(pdf_firmalar, listeyi_sifirla=listeyi_sifirla)
-                st.success(f"✅ {adet} firma havuza aktarildi.")
+                st.success(f"✅ {adet} firma havuza aktarıldı.")
                 st.rerun()
 
         except Exception as e:
@@ -3378,7 +3608,7 @@ with t3:
 
             if st.button("📊 Excel Firmalarini Havuza Aktar", use_container_width=True):
                 adet = listeye_ekle(excel_firmalar, listeyi_sifirla=listeyi_sifirla)
-                st.success(f"✅ {adet} firma havuza aktarildi.")
+                st.success(f"✅ {adet} firma havuza aktarıldı.")
                 st.rerun()
 
         except Exception as e:
@@ -3405,7 +3635,7 @@ with t4:
         else:
             manuel_firmalar = [f.strip() for f in manuel_input.split("\n") if f.strip()]
             adet = listeye_ekle(manuel_firmalar, listeyi_sifirla=listeyi_sifirla)
-            st.success(f"✅ {adet} firma havuza aktarildi.")
+            st.success(f"✅ {adet} firma havuza aktarıldı.")
             st.rerun()
 
 
@@ -3648,6 +3878,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.5
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.6
 </div>
 """, unsafe_allow_html=True)
