@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.6"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.7"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V1.6
+            Fuar Müşteri Otomasyonu V1.7
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.6</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.7</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -3082,10 +3082,144 @@ def derin_bilgi_bul(firma_adi):
 # ============================================================
 
 
+PDF_COUNTRIES = [
+    "Belgium", "Brunei", "Bulgaria", "China", "Czech Republic", "Egypt", "France",
+    "Hungary", "India", "Indonesia", "Iran", "Italy", "Pakistan", "Russia",
+    "South Korea", "Spain", "Sri Lanka", "Taiwan", "Türkiye", "Turkey", "Turkiye",
+    "Ukraine", "United Arab Emirates", "United Kingdom", "United States",
+    "Germany", "Almanya", "Italy", "İtalya", "Netherlands", "Hollanda",
+    "Poland", "Polonya", "Austria", "Avusturya", "Switzerland", "İsviçre",
+    "Japan", "Japonya", "Canada", "Kanada", "USA", "UK"
+]
+
+PDF_PRODUCT_GROUPS = [
+    "Aesthetic Products & Equipments",
+    "Aesthetic Products & Equipment",
+    "Associations/ Agencies & Media",
+    "Associations/ Agencies",
+    "Baby Care Products",
+    "Cleaning & Hygiene Products",
+    "Colour Cosmetics",
+    "Dermocosmetics",
+    "Hair Care Products & Equipments",
+    "Hair Care Products",
+    "Nail Care & Nail Art",
+    "Natural & Organic Cosmetics",
+    "Natural Cosmetics",
+    "Organic Cosmetics",
+    "Packaging & Machinery",
+    "Packaging",
+    "Perfumery",
+    "Personal Care Products",
+    "Personal Care",
+    "Pharmaceutical & OTC Products",
+    "Private Label & Contract Manufacturing",
+    "Private Label",
+    "Professional Salon Products & Equipments",
+    "Raw Materials & Ingredients",
+    "Services for Cosmetic Industry",
+    "Beauty Technology",
+    "Media",
+]
+
+PDF_SECTION_HEADERS = [
+    "LIST OF EXHIBITORS BY COUNTRY & PRODUCT GROUPS",
+    "LIST OF EXHIBITORS BY PRODUCT GROUPS",
+    "AESTHETIC PRODUCTS & EQUIPMENTS",
+    "ASSOCIATIONS/ AGENCIES & MEDIA",
+    "BABY CARE PRODUCTS",
+    "CLEANING & HYGIENE PRODUCTS",
+    "COLOUR COSMETICS",
+    "DERMOCOSMETICS",
+    "HAIR CARE PRODUCTS & EQUIPMENTS",
+    "NAIL CARE & NAIL ART",
+    "NATURAL & ORGANIC COSMETICS",
+    "PACKAGING & MACHINERY",
+    "PERFUMERY",
+    "PERSONAL CARE PRODUCTS",
+]
+
+
+def pdf_remove_urls(text):
+    if not text:
+        return ""
+    t = str(text)
+    t = re.sub(r"https?//\S+", " ", t, flags=re.I)
+    t = re.sub(r"https?://\S+", " ", t, flags=re.I)
+    t = re.sub(r"www\.\S+", " ", t, flags=re.I)
+    t = re.sub(r"\S+\.(com|com\.tr|net|org|co|cn|kr|eu|ru|uk|tr|de|it|fr|hu|pk|tech|me|in|io)(/\S*)?", " ", t, flags=re.I)
+    return t
+
+
+def pdf_is_section_or_country(text):
+    if not text:
+        return True
+
+    low = firma_adi_temizle(text).lower().strip()
+
+    if not low:
+        return True
+
+    if re.fullmatch(r"\d{1,3}", low):
+        return True
+
+    for h in PDF_SECTION_HEADERS:
+        if low == h.lower():
+            return True
+
+    for c in PDF_COUNTRIES:
+        if low == c.lower():
+            return True
+
+    for pg in PDF_PRODUCT_GROUPS:
+        if low == pg.lower():
+            return True
+
+    return False
+
+
+def pdf_cut_before_country_or_group(text):
+    """
+    BeautyEurasia tipi satırlarda yapı:
+    COMPANY NAME + Country + Product Group + Website
+    Burada ülke veya ürün grubu başladığı yerde kesilir.
+    """
+    if not text:
+        return ""
+
+    t = firma_adi_temizle(text)
+    t = pdf_remove_urls(t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # Önce ülke isimlerine göre kes
+    earliest = None
+    for country in sorted(PDF_COUNTRIES, key=len, reverse=True):
+        # Ülke kelimesi başta ise firma değildir
+        if re.fullmatch(re.escape(country), t, flags=re.I):
+            return ""
+
+        m = re.search(r"\b" + re.escape(country) + r"\b", t, flags=re.I)
+        if m and m.start() > 1:
+            if earliest is None or m.start() < earliest:
+                earliest = m.start()
+
+    # Sonra ürün gruplarına göre kes
+    for group in sorted(PDF_PRODUCT_GROUPS, key=len, reverse=True):
+        m = re.search(r"\b" + re.escape(group) + r"\b", t, flags=re.I)
+        if m and m.start() > 1:
+            if earliest is None or m.start() < earliest:
+                earliest = m.start()
+
+    if earliest is not None:
+        t = t[:earliest].strip()
+
+    return t.strip(" -–|•,:;")
+
+
 def pdf_satir_temizle(line):
     """
-    PDF kataloglarından gelen satırları firma adı adayı haline getirir.
-    Ülke, salon, stand, booth, hall, web/mail/telefon gibi kuyrukları temizler.
+    PDF kataloglarından sadece firma adını bırakır.
+    Ülke, ürün grubu, web sitesi, salon, stant, adres, telefon gibi alanları temizler.
     """
     if not line:
         return ""
@@ -3093,47 +3227,36 @@ def pdf_satir_temizle(line):
     t = firma_adi_temizle(line)
     t = re.sub(r"\s+", " ", t).strip()
 
-    # E-posta, web, telefon içeren satırlar firma adı değildir
-    if re.search(r"https?://|www\.|@", t.lower()):
+    if pdf_is_section_or_country(t):
         return ""
 
-    # Çok belirgin katalog kelimelerinden sonrasını kes
+    # mail / web / telefon ağırlıklı satırları ele
+    if re.fullmatch(r".*(@|telephone|phone|tel:|e-mail|email).*", t, flags=re.I):
+        return ""
+
+    # Web sitesinden öncesini al
+    t = re.split(r"https?://|https?//|www\.|\S+\.(?:com|com\.tr|net|org|co|cn|kr|eu|ru|uk|tr|de|it|fr|hu|pk|tech|me|in|io)", t, flags=re.I)[0].strip()
+
+    # Hall/Booth/Stand gibi alanlardan öncesini al
     t = re.split(
         r"\bHall\b|\bBooth\b|\bStand\b|\bStant\b|\bSalon\b|\bPavilion\b|\bCountry\b|\bÜlke\b|\bUlke\b|\bAddress\b|\bAdres\b|\bPhone\b|\bTel\b|\bE-mail\b|\bEmail\b",
         t,
         flags=re.IGNORECASE
     )[0].strip()
 
-    # Firma adı + ülke şeklinde gelenlerde ülkeyi kes
-    ulkeler = [
-        "Türkiye", "Turkiye", "Turkey", "Germany", "Almanya", "Italy", "İtalya",
-        "China", "Çin", "Spain", "İspanya", "France", "Fransa", "India", "Hindistan",
-        "USA", "United States", "United Kingdom", "UK", "England", "İngiltere",
-        "Netherlands", "Hollanda", "Poland", "Polonya", "Belgium", "Belçika",
-        "Austria", "Avusturya", "Switzerland", "İsviçre", "Iran", "İran",
-        "Korea", "South Korea", "Japan", "Japonya", "Taiwan", "Tayvan"
-    ]
+    # Ülke / ürün grubu başlamadan önceki kısım firma adı
+    t = pdf_cut_before_country_or_group(t)
 
-    low = t.lower()
-    earliest = None
-    for ulke in ulkeler:
-        idx = low.find(ulke.lower())
-        if idx > 2:
-            if earliest is None or idx < earliest:
-                earliest = idx
+    # Kalan satır sadece ülke/bölüm/kategori ise at
+    if pdf_is_section_or_country(t):
+        return ""
 
-    if earliest is not None:
-        t = t[:earliest].strip()
-
-    t = t.strip(" -–|•,:;")
-
-    return t
+    return t.strip(" -–|•,:;")
 
 
 def pdf_firma_adayi_mi(text):
     """
     PDF içinden gelen satırın firma adı olup olmadığını değerlendirir.
-    Çok katı değil; kataloglarda marka adları tek kelime olabilir.
     """
     if not text:
         return False
@@ -3141,13 +3264,19 @@ def pdf_firma_adayi_mi(text):
     t = pdf_satir_temizle(text)
     low = t.lower()
 
+    if not t:
+        return False
+
     if len(t) < 3 or len(t) > 120:
+        return False
+
+    if pdf_is_section_or_country(t):
         return False
 
     if re.fullmatch(r"[\d\s\-\+\(\):\./]+", t):
         return False
 
-    if re.search(r"https?://|www\.|@", low):
+    if re.search(r"https?://|https?//|www\.|@", low):
         return False
 
     yasak = [
@@ -3155,7 +3284,7 @@ def pdf_firma_adayi_mi(text):
         "contents", "içindekiler", "icindekiler", "page", "sayfa",
         "hall", "booth", "stand", "stant", "salon", "country", "ülke", "ulke",
         "address", "adres", "phone", "telephone", "telefon", "email", "e-mail",
-        "website", "web site", "product", "products", "ürün", "urun",
+        "website", "web site", "product group", "product groups",
         "category", "kategori", "sector", "sektör", "sektor",
         "organizer", "visitor", "ziyaretçi", "ziyaretci",
         "fuar", "expo", "fair", "exhibition", "detaylı incele", "detayli incele"
@@ -3167,32 +3296,17 @@ def pdf_firma_adayi_mi(text):
     if not re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]", t):
         return False
 
-    # Firma unvanı varsa güçlü aday
-    markerlar = [
-        "ltd", "şti", "sti", "a.ş", "a.s", "anonim", "limited", "sanayi", "san.",
-        "ticaret", "tic.", "company", "co.", "inc", "llc", "gmbh", "srl", "spa",
-        "group", "holding", "corporation", "corp"
-    ]
-    if any(m in low for m in markerlar):
-        return True
+    # Çok genel tek kelimeleri at
+    if len(t.split()) == 1 and low in ["media", "packaging", "perfumery", "cosmetics", "turkey"]:
+        return False
 
-    # Tamamı büyük harf ve 1-6 kelime arası ise kataloglarda firma olabilir
-    letters = re.sub(r"[^A-Za-zÇĞİÖŞÜçğıöşü]", "", t)
-    if len(letters) >= 4:
-        upper_ratio = sum(1 for c in letters if c.isupper()) / max(len(letters), 1)
-        if upper_ratio >= 0.65 and 1 <= len(t.split()) <= 8:
-            return True
-
-    # Normal başlık formatında 2-6 kelime arası ise aday olabilir
-    if 1 <= len(t.split()) <= 7:
-        return True
-
-    return False
+    return True
 
 
 def pdf_tablolardan_firma_cek(pdf):
     """
-    PDF tablolarındaki ilk uygun kolonlardan firma adı çıkarır.
+    PDF tablolarındaki ilk kolondan firma adı çıkarır.
+    BeautyEurasia gibi kataloglarda ilk kolon firma adıdır.
     """
     adaylar = []
 
@@ -3210,8 +3324,14 @@ def pdf_tablolardan_firma_cek(pdf):
                 if not row:
                     continue
 
-                # İlk 3 hücre firma adı olabilir; çoğu katalogda ilk kolon firma adıdır
-                for cell in row[:3]:
+                # İlk hücre firma adı olma ihtimali en yüksek olan hücredir
+                first = pdf_satir_temizle(row[0])
+                if pdf_firma_adayi_mi(first):
+                    adaylar.append(first)
+                    continue
+
+                # İlk hücre boşsa ilk 3 hücrede firma ara
+                for cell in row[1:3]:
                     cell = pdf_satir_temizle(cell)
                     if pdf_firma_adayi_mi(cell):
                         adaylar.append(cell)
@@ -3223,6 +3343,7 @@ def pdf_tablolardan_firma_cek(pdf):
 def pdf_metinden_firma_cek(pdf):
     """
     PDF düz metinlerinden satır satır firma adı çıkarır.
+    Ürün grubu sayfaları tekrar içerebilir; finalde mükerrer silinir.
     """
     adaylar = []
 
@@ -3235,20 +3356,10 @@ def pdf_metinden_firma_cek(pdf):
         if not page_text:
             continue
 
-        # Satır bazlı okuma
         lines = page_text.split("\n")
 
         for line in lines:
             temiz = pdf_satir_temizle(line)
-            if pdf_firma_adayi_mi(temiz):
-                adaylar.append(temiz)
-
-        # Bazı PDF'lerde firma bilgileri blok halinde olur; nokta/ayraçlardan da dene
-        text = re.sub(r"\s{2,}", "\n", page_text)
-        blocks = re.split(r"\n|•|\||;", text)
-
-        for block in blocks:
-            temiz = pdf_satir_temizle(block)
             if pdf_firma_adayi_mi(temiz):
                 adaylar.append(temiz)
 
@@ -3268,8 +3379,9 @@ def pdf_adaylari_son_temizle(adaylar):
         if not pdf_firma_adayi_mi(a):
             continue
 
-        # Çok sık çıkan anlamsız kısa kelimeleri ele
         low = a.lower().strip()
+
+        # Çok kısa veya kategori gibi görünen başlıkları ele
         if low in ["turkey", "türkiye", "turkiye", "company", "firma", "hall", "booth"]:
             continue
 
@@ -3281,10 +3393,9 @@ def pdf_adaylari_son_temizle(adaylar):
     return final
 
 
-
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V1.6.
+    PDF firma çıkarma motoru V1.7.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -3878,6 +3989,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.6
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.7
 </div>
 """, unsafe_allow_html=True)
