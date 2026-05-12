@@ -8,7 +8,19 @@ import time
 import io
 import random
 import logging
-from datetime import datetime
+import os
+import subprocess
+import sys
+
+def playwright_browser_kur():
+    browser_path = os.path.expanduser("~/.cache/ms-playwright")
+    if not os.path.exists(browser_path) or not os.listdir(browser_path):
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=False
+        )
+
+playwright_browser_kur()from datetime import datetime
 import concurrent.futures
 import pdfplumber
 from urllib.parse import urlparse, urljoin, quote_plus
