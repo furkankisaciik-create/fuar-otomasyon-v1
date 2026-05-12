@@ -1,3 +1,6 @@
+import os
+import sys
+import subprocess
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -8,24 +11,39 @@ import time
 import io
 import random
 import logging
-import os
-import subprocess
-import sys
-
-def playwright_browser_kur():
-    browser_path = os.path.expanduser("~/.cache/ms-playwright")
-    if not os.path.exists(browser_path) or not os.listdir(browser_path):
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=False
-        )
-
-playwright_browser_kur()from datetime import datetime
+from datetime import datetime
 import concurrent.futures
 import pdfplumber
-from urllib.parse import urlparse, urljoin, quote_plus
+from urllib.parse import urlparse, urljoin, quote_plus, parse_qs
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# ============================================================
+# PLAYWRIGHT CHROMIUM OTOMATIK KURULUM
+# Streamlit Cloud / GitHub deploy icin gereklidir
+# ============================================================
+
+def playwright_browser_kur():
+    try:
+        browser_path = os.path.expanduser("~/.cache/ms-playwright")
+        eksik = True
+
+        if os.path.exists(browser_path):
+            for root, dirs, files in os.walk(browser_path):
+                if "chrome-headless-shell" in files or "chrome" in files:
+                    eksik = False
+                    break
+
+        if eksik:
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=False
+            )
+    except Exception:
+        pass
+
+
+playwright_browser_kur()
 
 try:
     from playwright.sync_api import sync_playwright
@@ -33,37 +51,43 @@ try:
 except Exception:
     PLAYWRIGHT_AKTIF = False
 
+
 # ============================================================
-# SQUAREXPO FUAR MÜŞTERİ OTOMASYONU V3
-# Daha dayanıklı canlı sürüm
+# SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "SQUAREXPO Fuar Müşteri Otomasyonu V3"
+APP_TITLE = "SQUAREXPO Fuar Musteri Otomasyonu V3.2"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 15
 
-# ------------------------------------------------------------
+
+# ============================================================
 # STREAMLIT AYARLARI
-# ------------------------------------------------------------
+# ============================================================
+
 st.set_page_config(
     page_title=APP_TITLE,
     layout="wide",
     page_icon="🚀"
 )
 
-# ------------------------------------------------------------
+
+# ============================================================
 # LOG AYARLARI
-# ------------------------------------------------------------
+# ============================================================
+
 logging.basicConfig(
     filename="squarexpo_v3.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ------------------------------------------------------------
+
+# ============================================================
 # SESSION STATE
-# ------------------------------------------------------------
+# ============================================================
+
 if "ana_liste" not in st.session_state:
     st.session_state["ana_liste"] = []
 
@@ -75,11 +99,10 @@ if "son_islem_ozeti" not in st.session_state:
 
 
 # ============================================================
-# YARDIMCI FONKSİYONLAR
+# YARDIMCI FONKSIYONLAR
 # ============================================================
 
 def hata_kaydet(mesaj: str):
-    """Hataları hem log dosyasına hem de panelde gösterilecek listeye kaydeder."""
     logging.error(mesaj)
     st.session_state["son_hatalar"].append(mesaj)
     st.session_state["son_hatalar"] = st.session_state["son_hatalar"][-30:]
@@ -103,8 +126,7 @@ def firma_adi_temizle(text):
 def domain_al(url):
     try:
         parsed = urlparse(url)
-        domain = parsed.netloc.lower().replace("www.", "")
-        return domain
+        return parsed.netloc.lower().replace("www.", "")
     except Exception:
         return ""
 
@@ -167,7 +189,6 @@ def get_headers(referer=None):
 
 
 def yeni_session():
-    """Retry destekli requests session oluşturur."""
     session = requests.Session()
     retry = Retry(
         total=2,
@@ -184,36 +205,27 @@ def yeni_session():
 
 
 def guvenli_get(url, timeout=REQUEST_TIMEOUT, referer=None):
-    """Tek merkezden güvenli GET isteği."""
     session = yeni_session()
     try:
-        res = session.get(
+        return session.get(
             url,
             headers=get_headers(referer),
             timeout=timeout,
             allow_redirects=True,
             verify=True
         )
-        return res
     except requests.exceptions.SSLError:
-        # Bazı eski fuar sitelerinde SSL problemi olabiliyor. Son çare olarak verify=False.
-        try:
-            res = session.get(
-                url,
-                headers=get_headers(referer),
-                timeout=timeout,
-                allow_redirects=True,
-                verify=False
-            )
-            return res
-        except Exception as e:
-            raise e
-    except Exception as e:
-        raise e
+        return session.get(
+            url,
+            headers=get_headers(referer),
+            timeout=timeout,
+            allow_redirects=True,
+            verify=False
+        )
 
 
 # ============================================================
-# VERİTABANI
+# VERITABANI
 # ============================================================
 
 def db_baglan():
@@ -242,22 +254,14 @@ def tabloyu_hazirla():
         )
     """)
 
-    c.execute("""
-        CREATE INDEX IF NOT EXISTS idx_firma_adi 
-        ON sonuclar(firma_adi)
-    """)
-
-    c.execute("""
-        CREATE INDEX IF NOT EXISTS idx_fuar_etiketi 
-        ON sonuclar(fuar_etiketi)
-    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_firma_adi ON sonuclar(firma_adi)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_fuar_etiketi ON sonuclar(fuar_etiketi)")
 
     conn.commit()
     conn.close()
 
 
 def verileri_toplu_kaydet(kayitlar):
-    """SQLite kilitlenmesini azaltmak için kayıtları tek seferde yazar."""
     if not kayitlar:
         return
 
@@ -270,9 +274,9 @@ def verileri_toplu_kaydet(kayitlar):
         rows.append((
             k.get("fuar_etiketi", ""),
             k.get("firma_adi", ""),
-            k.get("web_adresi", "Bulunamadı"),
-            k.get("telefon", "Bulunamadı"),
-            k.get("eposta", "Bulunamadı"),
+            k.get("web_adresi", "Bulunamadi"),
+            k.get("telefon", "Bulunamadi"),
+            k.get("eposta", "Bulunamadi"),
             k.get("kaynak", ""),
             k.get("durum", ""),
             k.get("hata", ""),
@@ -320,83 +324,22 @@ def arsivi_temizle():
 
 
 # ============================================================
-# URL'DEN KATILIMCI/FİRMA ÇEKME
+# FIRMA LISTESI FILTRELEME
 # ============================================================
-
-def firmalari_url_den_cek(url):
-    """
-    Katılımcı listesi URL'sinden olası firma adlarını çıkarmaya çalışır.
-    Bu fonksiyon genel çalışır; her fuar sitesinin HTML yapısı farklı olabilir.
-    """
-    url = normalize_url(url)
-    res = guvenli_get(url, timeout=25, referer="https://www.google.com/")
-
-    if res.status_code >= 400:
-        raise Exception(f"HTTP {res.status_code} hatası alındı.")
-
-    html = res.text
-    soup = BeautifulSoup(html, "html.parser")
-
-    adaylar = []
-
-    # Görünmeyen/işe yaramayan alanları kaldır
-    for tag in soup(["script", "style", "noscript", "svg", "footer", "header", "nav"]):
-        tag.decompose()
-
-    # 1) Sık kullanılan HTML alanları
-    selectorler = [
-        "a", "h1", "h2", "h3", "h4",
-        ".exhibitor", ".exhibitor-name", ".company", ".company-name",
-        ".firma", ".firma-adi", ".katilimci", ".katilimci-adi",
-        "[class*='exhibitor']", "[class*='company']", "[class*='firma']", "[class*='katilimci']",
-        "[title]", "[data-title]", "[data-name]"
-    ]
-
-    for sel in selectorler:
-        try:
-            for item in soup.select(sel):
-                texts = [
-                    item.get_text(" "),
-                    item.get("title"),
-                    item.get("data-title"),
-                    item.get("data-name"),
-                    item.get("alt"),
-                ]
-                for t in texts:
-                    temiz = firma_adi_temizle(t)
-                    if temiz:
-                        adaylar.append(temiz)
-        except Exception:
-            continue
-
-    # 2) JSON/HTML içinde firma benzeri alanları yakalama
-    json_patterns = [
-        r'"company"\s*:\s*"([^"]{3,100})"',
-        r'"companyName"\s*:\s*"([^"]{3,100})"',
-        r'"name"\s*:\s*"([^"]{3,100})"',
-        r'"title"\s*:\s*"([^"]{3,100})"',
-        r'"firma"\s*:\s*"([^"]{3,100})"',
-    ]
-
-    for pattern in json_patterns:
-        for match in re.findall(pattern, html, flags=re.IGNORECASE):
-            adaylar.append(firma_adi_temizle(match))
-
-    return firma_listesi_filtrele(adaylar)
-
 
 def firma_listesi_filtrele(adaylar):
     yasakli = [
-        "giriş", "kayıt", "menü", "iletişim", "fuar", "expo", "detay",
-        "tıklayın", "ara", "sayfa", "home", "login", "register",
-        "about", "contact", "privacy", "cookie", "kvkk", "terms",
-        "sponsor", "visitor", "exhibitor", "download", "pdf", "map",
-        "facebook", "instagram", "linkedin", "youtube", "twitter",
+        "giris", "giriş", "kayıt", "kayit", "menü", "menu", "iletişim", "iletisim",
+        "fuar", "expo", "detay", "tıklayın", "tiklayin", "ara", "sayfa",
+        "home", "login", "register", "about", "contact", "privacy", "cookie",
+        "kvkk", "terms", "sponsor", "visitor", "exhibitor", "download", "pdf",
+        "map", "facebook", "instagram", "linkedin", "youtube", "twitter",
         "language", "english", "turkish", "read more", "show more",
         "stand", "booth", "hall", "category", "product", "service"
     ]
 
     temiz_liste = []
+
     for item in adaylar:
         item = firma_adi_temizle(item)
         item_lower = item.lower()
@@ -418,9 +361,9 @@ def firma_listesi_filtrele(adaylar):
 
         temiz_liste.append(item)
 
-    # Mükerrer temizliği
     seen = set()
     sonuc = []
+
     for item in temiz_liste:
         key = item.lower().strip()
         if key not in seen:
@@ -430,13 +373,68 @@ def firma_listesi_filtrele(adaylar):
     return sorted(sonuc)
 
 
+# ============================================================
+# URL'DEN FIRMA CEKME
+# ============================================================
+
+def firmalari_url_den_cek(url):
+    url = normalize_url(url)
+    res = guvenli_get(url, timeout=25, referer="https://www.google.com/")
+
+    if res.status_code >= 400:
+        raise Exception(f"HTTP {res.status_code} hatasi alindi.")
+
+    html = res.text
+    soup = BeautifulSoup(html, "html.parser")
+
+    adaylar = []
+
+    for tag in soup(["script", "style", "noscript", "svg", "footer", "header", "nav"]):
+        tag.decompose()
+
+    selectorler = [
+        "a", "h1", "h2", "h3", "h4",
+        ".exhibitor", ".exhibitor-name", ".company", ".company-name",
+        ".firma", ".firma-adi", ".katilimci", ".katilimci-adi",
+        "[class*='exhibitor']", "[class*='company']", "[class*='firma']",
+        "[class*='katilimci']", "[title]", "[data-title]", "[data-name]"
+    ]
+
+    for sel in selectorler:
+        try:
+            for item in soup.select(sel):
+                texts = [
+                    item.get_text(" "),
+                    item.get("title"),
+                    item.get("data-title"),
+                    item.get("data-name"),
+                    item.get("alt"),
+                ]
+                for t in texts:
+                    temiz = firma_adi_temizle(t)
+                    if temiz:
+                        adaylar.append(temiz)
+        except Exception:
+            continue
+
+    json_patterns = [
+        r'"company"\s*:\s*"([^"]{3,100})"',
+        r'"companyName"\s*:\s*"([^"]{3,100})"',
+        r'"name"\s*:\s*"([^"]{3,100})"',
+        r'"title"\s*:\s*"([^"]{3,100})"',
+        r'"firma"\s*:\s*"([^"]{3,100})"',
+    ]
+
+    for pattern in json_patterns:
+        for match in re.findall(pattern, html, flags=re.IGNORECASE):
+            adaylar.append(firma_adi_temizle(match))
+
+    return firma_listesi_filtrele(adaylar)
+
+
 def firmalari_url_den_cek_playwright(url):
-    """
-    JavaScript ile yüklenen fuar sayfaları için gerçek tarayıcı motoru.
-    Streamlit Cloud / VPS üzerinde çalışması için playwright ve chromium kurulmalıdır.
-    """
     if not PLAYWRIGHT_AKTIF:
-        raise Exception("Playwright kurulu değil. Terminalde: pip install playwright && playwright install chromium")
+        raise Exception("Playwright kurulu degil veya aktif degil.")
 
     url = normalize_url(url)
     adaylar = []
@@ -461,7 +459,6 @@ def firmalari_url_den_cek_playwright(url):
         page.goto(url, wait_until="networkidle", timeout=60000)
         page.wait_for_timeout(5000)
 
-        # Sayfa aşağı kaydırılır; lazy-load varsa firmalar yüklensin
         for _ in range(6):
             page.mouse.wheel(0, 2500)
             page.wait_for_timeout(1200)
@@ -473,7 +470,6 @@ def firmalari_url_den_cek_playwright(url):
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # HTML taglerinden aday çıkar
     selectorler = [
         "a", "h1", "h2", "h3", "h4", "h5",
         "div", "span", "p",
@@ -499,7 +495,6 @@ def firmalari_url_den_cek_playwright(url):
         except Exception:
             continue
 
-    # Body text satırlarından aday çıkar
     for line in text.split("\n"):
         temiz = firma_adi_temizle(line)
         if temiz:
@@ -509,15 +504,10 @@ def firmalari_url_den_cek_playwright(url):
 
 
 # ============================================================
-# WEB SİTESİ BULMA
+# WEBSITE BULMA VE ILETISIM CEKME
 # ============================================================
 
 def firma_websitesi_bul(firma_adi):
-    """
-    Bing ve DuckDuckGo HTML sonuçları üzerinden web sitesi bulmaya çalışır.
-    Not: Canlı sunucularda arama motorları bazen engelleyebilir.
-    Daha profesyonel kullanımda SerpAPI / Brave Search API önerilir.
-    """
     sorgu = quote_plus(f"{firma_adi} official website contact")
     arama_url_listesi = [
         f"https://www.bing.com/search?q={sorgu}",
@@ -538,10 +528,8 @@ def firma_websitesi_bul(firma_adi):
             for a in soup.find_all("a", href=True):
                 href = a.get("href", "").strip()
 
-                # DuckDuckGo yönlendirme linkleri bazen uddg parametresinde gerçek URL taşır
                 if "uddg=" in href:
                     try:
-                        from urllib.parse import parse_qs
                         parsed = urlparse(href)
                         qs = parse_qs(parsed.query)
                         if "uddg" in qs:
@@ -550,6 +538,7 @@ def firma_websitesi_bul(firma_adi):
                         pass
 
                 href = normalize_url(href)
+
                 if not url_gecerli_mi(href):
                     continue
                 if istenmeyen_link_mi(href):
@@ -561,21 +550,16 @@ def firma_websitesi_bul(firma_adi):
 
                 linkler.append(href)
 
-            # En temiz ilk sonucu dön
             for link in linkler:
                 if link.startswith("http"):
                     return link
 
         except Exception as e:
-            logging.warning(f"Arama hatası: {firma_adi} - {str(e)}")
+            logging.warning(f"Arama hatasi: {firma_adi} - {str(e)}")
             continue
 
     return ""
 
-
-# ============================================================
-# WEB SİTESİNDEN MAİL / TELEFON ÇEKME
-# ============================================================
 
 def eposta_ayikla(text):
     if not text:
@@ -603,7 +587,6 @@ def telefon_ayikla(text):
     if not text:
         return []
 
-    # Türkiye ve uluslararası telefon formatları için esnek regex
     patternler = [
         r"\+90[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}",
         r"0[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}",
@@ -615,6 +598,7 @@ def telefon_ayikla(text):
         telefonlar.extend(re.findall(p, text))
 
     temiz = []
+
     for tel in telefonlar:
         tel = re.sub(r"\s+", " ", tel).strip()
         rakam = re.sub(r"\D", "", tel)
@@ -643,25 +627,27 @@ def iletisim_sayfasi_linkleri_bul(base_url, html):
             if url_gecerli_mi(full):
                 adaylar.append(full)
 
-    # Öncelik: contact / iletişim sayfaları
     adaylar = list(dict.fromkeys(adaylar))
-    adaylar = sorted(adaylar, key=lambda x: 0 if any(k in x.lower() for k in ["contact", "iletisim", "iletişim"]) else 1)
+    adaylar = sorted(
+        adaylar,
+        key=lambda x: 0 if any(k in x.lower() for k in ["contact", "iletisim", "iletişim"]) else 1
+    )
 
     return adaylar[:4]
 
 
 def websitesinden_iletisim_bul(web_url):
     sonuc = {
-        "web_adresi": web_url or "Bulunamadı",
-        "telefon": "Bulunamadı",
-        "eposta": "Bulunamadı",
+        "web_adresi": web_url or "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
         "kaynak": "",
-        "durum": "Başladı",
+        "durum": "Basladi",
         "hata": ""
     }
 
     if not web_url:
-        sonuc["durum"] = "Web sitesi bulunamadı"
+        sonuc["durum"] = "Web sitesi bulunamadi"
         return sonuc
 
     web_url = normalize_url(web_url)
@@ -677,7 +663,6 @@ def websitesinden_iletisim_bul(web_url):
 
         kaynak = web_url
 
-        # Ana sayfada bulamazsa iletişim sayfalarına bak
         if not mailler or not telefonlar:
             for contact_url in iletisim_sayfasi_linkleri_bul(web_url, html):
                 try:
@@ -696,8 +681,9 @@ def websitesinden_iletisim_bul(web_url):
 
                     if mailler and telefonlar:
                         break
+
                 except Exception as e:
-                    logging.warning(f"İletişim sayfası okunamadı: {contact_url} - {str(e)}")
+                    logging.warning(f"Iletisim sayfasi okunamadi: {contact_url} - {str(e)}")
                     continue
 
         if mailler:
@@ -706,28 +692,25 @@ def websitesinden_iletisim_bul(web_url):
             sonuc["telefon"] = ", ".join(telefonlar)
 
         sonuc["kaynak"] = kaynak
-        sonuc["durum"] = "Tamamlandı"
+        sonuc["durum"] = "Tamamlandi"
 
-        if sonuc["eposta"] == "Bulunamadı" and sonuc["telefon"] == "Bulunamadı":
-            sonuc["durum"] = "Web bulundu, iletişim bulunamadı"
+        if sonuc["eposta"] == "Bulunamadi" and sonuc["telefon"] == "Bulunamadi":
+            sonuc["durum"] = "Web bulundu, iletisim bulunamadi"
 
     except Exception as e:
         sonuc["durum"] = "Hata"
         sonuc["hata"] = str(e)
-        logging.error(f"Site iletişim hatası: {web_url} - {str(e)}")
+        logging.error(f"Site iletisim hatasi: {web_url} - {str(e)}")
 
     return sonuc
 
 
 def derin_bilgi_bul(firma_adi):
-    """
-    Firma adı -> Web sitesi -> Mail/Telefon
-    """
     sonuc = {
         "firma_adi": firma_adi,
-        "web_adresi": "Bulunamadı",
-        "telefon": "Bulunamadı",
-        "eposta": "Bulunamadı",
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
         "kaynak": "",
         "durum": "",
         "hata": ""
@@ -739,7 +722,7 @@ def derin_bilgi_bul(firma_adi):
         web = firma_websitesi_bul(firma_adi)
 
         if not web:
-            sonuc["durum"] = "Web sitesi bulunamadı"
+            sonuc["durum"] = "Web sitesi bulunamadi"
             return sonuc
 
         iletisim = websitesinden_iletisim_bul(web)
@@ -752,16 +735,17 @@ def derin_bilgi_bul(firma_adi):
     except Exception as e:
         sonuc["durum"] = "Hata"
         sonuc["hata"] = str(e)
-        logging.error(f"Derin bilgi hatası: {firma_adi} - {str(e)}")
+        logging.error(f"Derin bilgi hatasi: {firma_adi} - {str(e)}")
         return sonuc
 
 
 # ============================================================
-# PDF / EXCEL / MANUEL GİRİŞ
+# PDF / EXCEL / MANUEL
 # ============================================================
 
 def pdf_firmalari_oku(pdf_file):
     firmalar = []
+
     try:
         with pdfplumber.open(pdf_file) as pdf:
             for page in pdf.pages:
@@ -772,7 +756,7 @@ def pdf_firmalari_oku(pdf_file):
                         if temiz:
                             firmalar.append(temiz)
     except Exception as e:
-        raise Exception(f"PDF okuma hatası: {str(e)}")
+        raise Exception(f"PDF okuma hatasi: {str(e)}")
 
     return firma_listesi_filtrele(firmalar)
 
@@ -780,13 +764,15 @@ def pdf_firmalari_oku(pdf_file):
 def excel_firmalari_oku(excel_file):
     try:
         df_upload = pd.read_excel(excel_file)
+
         if df_upload.empty:
             return []
 
         ilk_sutun = df_upload.iloc[:, 0].dropna().astype(str).tolist()
         return firma_listesi_filtrele(ilk_sutun)
+
     except Exception as e:
-        raise Exception(f"Excel okuma hatası: {str(e)}")
+        raise Exception(f"Excel okuma hatasi: {str(e)}")
 
 
 def listeye_ekle(yeni_firmalar, listeyi_sifirla=False):
@@ -803,104 +789,108 @@ def listeye_ekle(yeni_firmalar, listeyi_sifirla=False):
 
 
 # ============================================================
-# ARAYÜZ
+# ARAYUZ
 # ============================================================
 
 tabloyu_hazirla()
 
-st.title("🚀 SQUAREXPO Fuar Müşteri Otomasyonu V3")
-st.caption("Katılımcı listesi URL / PDF / Excel / manuel girişten firma havuzu oluşturur; firma web sitesi, mail ve telefon bulmaya çalışır.")
+st.title("🚀 SQUAREXPO Fuar Musteri Otomasyonu V3.2")
+st.caption("Katilimci listesi URL / PDF / Excel / manuel giristen firma havuzu olusturur; firma web sitesi, mail ve telefon bulmaya calisir.")
 
 with st.sidebar:
-    st.header("⚙️ Tarama Ayarları")
+    st.header("⚙️ Tarama Ayarlari")
+
     if PLAYWRIGHT_AKTIF:
-        st.success("Playwright aktif: JS sayfaları okunabilir.")
+        st.success("Playwright aktif: JS sayfalari okunabilir.")
     else:
         st.warning("Playwright pasif: Sadece statik HTML okunur.")
+
     fuar_etiketi = st.text_input("Fuar Etiketi", value="Genel_Liste")
 
     max_workers = st.slider(
-        "Aynı anda taranacak firma sayısı",
+        "Ayni anda taranacak firma sayisi",
         min_value=1,
         max_value=8,
         value=MAX_WORKERS_DEFAULT,
-        help="Canlı sunucuda hata alırsan 1-3 arası kullan. Fazla artırmak IP engeli ve timeout riskini yükseltir."
+        help="Canli sunucuda hata alirsan 1-3 arasi kullan."
     )
 
-    listeyi_sifirla = st.checkbox("Yeni veri eklenince mevcut havuzu sıfırla", value=True)
+    listeyi_sifirla = st.checkbox("Yeni veri eklenince mevcut havuzu sifirla", value=True)
 
     st.divider()
 
-    if st.button("🧹 İşlem Havuzunu Temizle", use_container_width=True):
+    if st.button("🧹 Islem Havuzunu Temizle", use_container_width=True):
         st.session_state["ana_liste"] = []
         st.rerun()
 
-    if st.button("🧯 Hata Loglarını Temizle", use_container_width=True):
+    if st.button("🧯 Hata Loglarini Temizle", use_container_width=True):
         st.session_state["son_hatalar"] = []
         st.rerun()
 
 
-t1, t2, t3, t4 = st.tabs(["🌐 URL Tarama", "📄 PDF Analiz", "📊 Excel Giriş", "📂 Manuel Liste"])
+t1, t2, t3, t4 = st.tabs(["🌐 URL Tarama", "📄 PDF Analiz", "📊 Excel Giris", "📂 Manuel Liste"])
 
 
-# ------------------------------------------------------------
-# URL SEKMESİ
-# ------------------------------------------------------------
+# ============================================================
+# URL SEKMESI
+# ============================================================
+
 with t1:
-    st.subheader("🌐 Katılımcı Listesi URL Tarama")
+    st.subheader("🌐 Katilimci Listesi URL Tarama")
+
     url_input = st.text_input(
         "Hedef URL",
         placeholder="https://ornekfuar.com/katilimci-listesi"
     )
 
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        url_button = st.button("🔍 URL'den Firmaları Çek", use_container_width=True)
+    url_button = st.button("🔍 URL'den Firmalari Cek", use_container_width=False)
 
     if url_button:
         if not url_input.strip():
-            st.warning("Lütfen bir URL gir.")
+            st.warning("Lutfen bir URL gir.")
         else:
             try:
-                with st.spinner("URL okunuyor ve firma isimleri çıkarılıyor..."):
+                with st.spinner("URL okunuyor ve firma isimleri cikariliyor..."):
                     firmalar = firmalari_url_den_cek(url_input)
 
-                    # Statik HTML'den sonuç çıkmazsa gerçek tarayıcı motorunu dene
                     if not firmalar:
-                        st.warning("Statik HTML içinde firma bulunamadı. JavaScript tarayıcı motoru deneniyor...")
+                        st.warning("Statik HTML icinde firma bulunamadi. JavaScript tarayici motoru deneniyor...")
                         firmalar = firmalari_url_den_cek_playwright(url_input)
 
                     adet = listeye_ekle(firmalar, listeyi_sifirla=listeyi_sifirla)
 
                 if adet > 0:
-                    st.success(f"✅ {adet} firma havuza aktarıldı.")
+                    st.success(f"✅ {adet} firma havuza aktarildi.")
                     st.rerun()
                 else:
-                    st.error("Bu URL'den firma adı çıkarılamadı. Site veriyi gizli API ile çekiyor veya bot erişimini kısıtlıyor olabilir.")
+                    st.error("Bu URL'den firma adi cikarilamadi. Site veriyi gizli API ile cekiyor veya bot erisimini kisitliyor olabilir.")
+
             except Exception as e:
-                hata_kaydet(f"URL tarama hatası: {str(e)}")
-                st.error(f"URL tarama hatası: {str(e)}")
+                hata_kaydet(f"URL tarama hatasi: {str(e)}")
+                st.error(f"URL tarama hatasi: {str(e)}")
 
 
-# ------------------------------------------------------------
-# PDF SEKMESİ
-# ------------------------------------------------------------
+# ============================================================
+# PDF SEKMESI
+# ============================================================
+
 with t2:
-    st.subheader("📄 PDF Katılımcı Kataloğu Analiz")
-    pdf_file = st.file_uploader("Katalog PDF'i yükleyin", type=["pdf"])
+    st.subheader("📄 PDF Katilimci Katalogu Analiz")
+    pdf_file = st.file_uploader("Katalog PDF'i yukleyin", type=["pdf"])
 
     if pdf_file:
         try:
             with st.spinner("PDF okunuyor..."):
                 pdf_firmalar = pdf_firmalari_oku(pdf_file)
 
-            st.info(f"PDF içinde {len(pdf_firmalar)} olası firma adı bulundu.")
-            if pdf_firmalar:
-                st.dataframe(pd.DataFrame({"Firma Adı": pdf_firmalar}), use_container_width=True)
+            st.info(f"PDF icinde {len(pdf_firmalar)} olasi firma adi bulundu.")
 
-            if st.button("📥 PDF Firmalarını Havuza Aktar", use_container_width=True):
+            if pdf_firmalar:
+                st.dataframe(pd.DataFrame({"Firma Adi": pdf_firmalar}), use_container_width=True)
+
+            if st.button("📥 PDF Firmalarini Havuza Aktar", use_container_width=True):
                 adet = listeye_ekle(pdf_firmalar, listeyi_sifirla=listeyi_sifirla)
-                st.success(f"✅ {adet} firma havuza aktarıldı.")
+                st.success(f"✅ {adet} firma havuza aktarildi.")
                 st.rerun()
 
         except Exception as e:
@@ -908,24 +898,26 @@ with t2:
             st.error(str(e))
 
 
-# ------------------------------------------------------------
-# EXCEL SEKMESİ
-# ------------------------------------------------------------
+# ============================================================
+# EXCEL SEKMESI
+# ============================================================
+
 with t3:
-    st.subheader("📊 Excel Firma Listesi Giriş")
-    excel_file = st.file_uploader("Firma Listesi Excel'i yükleyin", type=["xlsx", "xls"])
+    st.subheader("📊 Excel Firma Listesi Giris")
+    excel_file = st.file_uploader("Firma Listesi Excel'i yukleyin", type=["xlsx", "xls"])
 
     if excel_file:
         try:
             excel_firmalar = excel_firmalari_oku(excel_file)
 
-            st.info(f"Excel içinde {len(excel_firmalar)} firma bulundu. İlk sütun firma adı kabul edilir.")
-            if excel_firmalar:
-                st.dataframe(pd.DataFrame({"Firma Adı": excel_firmalar}), use_container_width=True)
+            st.info(f"Excel icinde {len(excel_firmalar)} firma bulundu. Ilk sutun firma adi kabul edilir.")
 
-            if st.button("📊 Excel Firmalarını Havuza Aktar", use_container_width=True):
+            if excel_firmalar:
+                st.dataframe(pd.DataFrame({"Firma Adi": excel_firmalar}), use_container_width=True)
+
+            if st.button("📊 Excel Firmalarini Havuza Aktar", use_container_width=True):
                 adet = listeye_ekle(excel_firmalar, listeyi_sifirla=listeyi_sifirla)
-                st.success(f"✅ {adet} firma havuza aktarıldı.")
+                st.success(f"✅ {adet} firma havuza aktarildi.")
                 st.rerun()
 
         except Exception as e:
@@ -933,58 +925,52 @@ with t3:
             st.error(str(e))
 
 
-# ------------------------------------------------------------
-# MANUEL SEKMESİ
-# ------------------------------------------------------------
+# ============================================================
+# MANUEL SEKMESI
+# ============================================================
+
 with t4:
     st.subheader("📂 Manuel Firma Listesi")
+
     manuel_input = st.text_area(
-        "Firma isimlerini yapıştırın",
-        placeholder="Her satıra bir firma adı gelecek şekilde yapıştırın.",
+        "Firma isimlerini yapistirin",
+        placeholder="Her satira bir firma adi gelecek sekilde yapistirin.",
         height=220
     )
 
     if st.button("➕ Manuel Listeyi Havuza Aktar", use_container_width=True):
         if not manuel_input.strip():
-            st.warning("Liste boş görünüyor.")
+            st.warning("Liste bos gorunuyor.")
         else:
             manuel_firmalar = [f.strip() for f in manuel_input.split("\n") if f.strip()]
             adet = listeye_ekle(manuel_firmalar, listeyi_sifirla=listeyi_sifirla)
-            st.success(f"✅ {adet} firma havuza aktarıldı.")
+            st.success(f"✅ {adet} firma havuza aktarildi.")
             st.rerun()
 
 
 # ============================================================
-# İŞLEM HAVUZU
+# ISLEM HAVUZU
 # ============================================================
 
 st.divider()
-st.subheader(f"📋 İşlem Havuzu: {len(st.session_state['ana_liste'])} Firma")
+st.subheader(f"📋 Islem Havuzu: {len(st.session_state['ana_liste'])} Firma")
 
 if st.session_state["ana_liste"]:
-    havuz_df = pd.DataFrame({"Firma Adı": st.session_state["ana_liste"]})
+    havuz_df = pd.DataFrame({"Firma Adi": st.session_state["ana_liste"]})
     st.dataframe(havuz_df, use_container_width=True, height=300)
 
-    c1, c2 = st.columns([2, 1])
-
-    with c1:
-        tara = st.button("⚡ FİRMALARI TARA VE ARŞİVE KAYDET", use_container_width=True)
-
-    with c2:
-        if st.button("📥 Sadece Havuzu Excel İndir", use_container_width=True):
-            pass
-
-    # Havuz Excel indirme
     output_havuz = io.BytesIO()
     with pd.ExcelWriter(output_havuz, engine="openpyxl") as writer:
         havuz_df.to_excel(writer, index=False)
 
     st.download_button(
-        label="📥 Havuzu Excel Olarak İndir",
+        label="📥 Havuzu Excel Olarak Indir",
         data=output_havuz.getvalue(),
         file_name=f"{fuar_etiketi}_firma_havuzu.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+    tara = st.button("⚡ FIRMALARI TARA VE ARSIVE KAYDET", use_container_width=True)
 
     if tara:
         firmalar = st.session_state["ana_liste"]
@@ -1009,9 +995,9 @@ if st.session_state["ana_liste"]:
                 except Exception as e:
                     res = {
                         "firma_adi": firma,
-                        "web_adresi": "Bulunamadı",
-                        "telefon": "Bulunamadı",
-                        "eposta": "Bulunamadı",
+                        "web_adresi": "Bulunamadi",
+                        "telefon": "Bulunamadi",
+                        "eposta": "Bulunamadi",
                         "kaynak": "",
                         "durum": "Hata",
                         "hata": str(e)
@@ -1020,53 +1006,52 @@ if st.session_state["ana_liste"]:
                 res["fuar_etiketi"] = fuar_etiketi
                 kayitlar.append(res)
 
-                if res.get("durum") == "Tamamlandı":
+                if res.get("durum") == "Tamamlandi":
                     basarili += 1
-                elif "bulunamadı" in res.get("durum", "").lower():
+                elif "bulunamadi" in res.get("durum", "").lower():
                     web_bulunamadi += 1
                 elif res.get("durum") == "Hata":
                     hata_sayisi += 1
 
                 progress_bar.progress((i + 1) / len(firmalar))
-                status_area.info(f"İşleniyor: {i + 1}/{len(firmalar)} | Son firma: {firma}")
+                status_area.info(f"Isleniyor: {i + 1}/{len(firmalar)} | Son firma: {firma}")
 
                 if len(kayitlar) % 5 == 0 or i == len(firmalar) - 1:
                     sonuc_placeholder.dataframe(pd.DataFrame(kayitlar), use_container_width=True)
 
-        # Veritabanına tek seferde yaz
         verileri_toplu_kaydet(kayitlar)
 
         st.session_state["son_islem_ozeti"] = (
-            f"Tamamlandı. Toplam: {len(kayitlar)} | "
-            f"Başarılı: {basarili} | "
-            f"Web bulunamadı: {web_bulunamadi} | "
+            f"Tamamlandi. Toplam: {len(kayitlar)} | "
+            f"Basarili: {basarili} | "
+            f"Web bulunamadi: {web_bulunamadi} | "
             f"Hata: {hata_sayisi}"
         )
 
-        st.success("✅ İşlem tamamlandı ve arşive kaydedildi.")
+        st.success("✅ Islem tamamlandi ve arsive kaydedildi.")
         st.info(st.session_state["son_islem_ozeti"])
 
-        # İşlem bitince havuzu temizle
         st.session_state["ana_liste"] = []
         st.rerun()
 
 else:
-    st.info("Henüz işlem havuzunda firma yok. URL, PDF, Excel veya manuel girişten firma ekleyebilirsin.")
+    st.info("Henuz islem havuzunda firma yok. URL, PDF, Excel veya manuel giristen firma ekleyebilirsin.")
 
 
 # ============================================================
-# ARŞİV
+# ARSIV
 # ============================================================
 
 st.divider()
-st.subheader("🗄️ Kalıcı Arşiv")
+st.subheader("🗄️ Kalici Arsiv")
 
 df_arsiv = arsivi_getir()
 
 if not df_arsiv.empty:
-    filtre_fuar = st.text_input("Arşiv içinde ara", placeholder="Firma adı, mail, web sitesi veya fuar etiketi yazın")
+    filtre_fuar = st.text_input("Arsiv icinde ara", placeholder="Firma adi, mail, web sitesi veya fuar etiketi yazin")
 
     df_goster = df_arsiv.copy()
+
     if filtre_fuar.strip():
         aranan = filtre_fuar.lower().strip()
         mask = df_goster.astype(str).apply(lambda col: col.str.lower().str.contains(aranan, na=False)).any(axis=1)
@@ -1082,7 +1067,7 @@ if not df_arsiv.empty:
 
     with c1:
         st.download_button(
-            label="📥 Arşivi Excel İndir",
+            label="📥 Arsivi Excel Indir",
             data=output.getvalue(),
             file_name=f"{fuar_etiketi}_fuar_liste.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1090,26 +1075,26 @@ if not df_arsiv.empty:
         )
 
     with c2:
-        with st.expander("🗑️ Arşiv Temizle"):
-            st.warning("Bu işlem tüm arşivi siler.")
-            if st.button("Evet, Tüm Arşivi Sil"):
+        with st.expander("🗑️ Arsiv Temizle"):
+            st.warning("Bu islem tum arsivi siler.")
+            if st.button("Evet, Tum Arsivi Sil"):
                 arsivi_temizle()
-                st.success("Arşiv temizlendi.")
+                st.success("Arsiv temizlendi.")
                 st.rerun()
 
 else:
-    st.info("Arşiv henüz boş.")
+    st.info("Arsiv henuz bos.")
 
 
 # ============================================================
-# HATA PANELİ
+# HATA PANELI
 # ============================================================
 
-with st.expander("🧯 Son Hatalar / Sistem Logları"):
+with st.expander("🧯 Son Hatalar / Sistem Loglari"):
     if st.session_state["son_hatalar"]:
         for h in st.session_state["son_hatalar"]:
             st.code(h)
     else:
-        st.info("Şu anda görünür hata yok.")
+        st.info("Su anda gorunur hata yok.")
 
-    st.caption("Ayrıca sunucu klasöründe squarexpo_v3.log dosyası oluşur.")
+    st.caption("Ayrica sunucu klasorunde squarexpo_v3.log dosyasi olusur.")
