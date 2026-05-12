@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.8"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.0"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V1.8
+            Fuar Müşteri Otomasyonu V2.0
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.8</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.0</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -429,7 +429,7 @@ def ozellik_kartlari_goster():
         <div class="feature-card">
             <div class="icon">🔎</div>
             <strong>Akıllı Firma Çekimi</strong>
-            <span>URL, PDF, Excel ve manuel girişlerden firma isimlerini çoklu motorla ayıklar.</span>
+            <span>URL, PDF, Excel ve manuel girişlerden firma isimlerini merkezi motorla ayıklar.</span>
         </div>
         <div class="feature-card">
             <div class="icon">🌐</div>
@@ -3077,6 +3077,120 @@ def derin_bilgi_bul(firma_adi):
         return sonuc
 
 
+
+# ============================================================
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.0
+# ============================================================
+
+def firma_adi_standartlastir(firma):
+    if not firma:
+        return ""
+
+    f = firma_adi_temizle(firma)
+    f = f.replace("\u200b", " ").replace("\ufeff", " ")
+    f = re.sub(r"\s+", " ", f).strip()
+
+    # Web/mail/tel kırıntılarını temizle
+    f = re.split(r"https?://|https?//|www\.|mailto:|tel:|@", f, flags=re.I)[0].strip()
+
+    # Kaynaklardan gelen kuyruk alanları
+    cut_patterns = [
+        r"\bTürkiye\b", r"\bTurkey\b", r"\bTurkiye\b", r"\bChina\b", r"\bGermany\b",
+        r"\bItaly\b", r"\bIndia\b", r"\bUnited States\b", r"\bUnited Kingdom\b",
+        r"\bHall\b", r"\bBooth\b", r"\bStand\b", r"\bStant\b", r"\bSalon\b",
+        r"\bCountry\b", r"\bÜlke\b", r"\bSector\b", r"\bSektör\b", r"\bKategori\b",
+        r"\bProducts\b", r"\bProduct Group\b", r"\bProduct Groups\b",
+        r"\bDetaylı İncele\b", r"\bDetayli Incele\b"
+    ]
+
+    earliest = None
+    for p in cut_patterns:
+        m = re.search(p, f, flags=re.I)
+        if m and m.start() > 2:
+            earliest = m.start() if earliest is None else min(earliest, m.start())
+
+    if earliest is not None:
+        f = f[:earliest].strip()
+
+    return f.strip(" -–|•,:;")
+
+
+def firma_adi_gecerli_mi(firma):
+    f = firma_adi_standartlastir(firma)
+    low = f.lower().strip()
+
+    if not f or len(f) < 2 or len(f) > 140:
+        return False
+
+    if re.fullmatch(r"[\d\s\-\+\(\):\./]+", f):
+        return False
+
+    if re.search(r"https?://|https?//|www\.|@", low):
+        return False
+
+    hard_garbage = [
+        "country", "ülke", "ulke", "sector", "sektör", "sektor",
+        "category", "kategori", "product group", "product groups",
+        "hall", "booth", "stand", "stant", "salon", "page", "sayfa",
+        "exhibitor list", "katılımcı listesi", "katilimci listesi",
+        "see you next year", "gelecek sene", "görüşmek üzere", "gorusmek uzere",
+        "visitor", "organizer", "privacy", "cookie", "kvkk",
+        "phone", "telephone", "email", "e-mail", "website", "web site"
+    ]
+    if any(g in low for g in hard_garbage):
+        return False
+
+    if re.search(r"\b\d{1,2}\s*[-–]\s*\d{1,2}\s*(eylül|eylul|september|june|haziran|may|nisan|april)\b", low):
+        return False
+
+    category_words = {
+        "products", "product", "care", "cosmetics", "cosmetic", "hygiene",
+        "cleaning", "packaging", "machinery", "materials", "ingredients",
+        "perfumery", "dermocosmetics", "pharmaceutical", "equipment",
+        "equipments", "services", "media", "association", "agencies",
+        "label", "manufacturing", "nail", "hair", "baby", "organic",
+        "natural", "colour", "color", "raw"
+    }
+    words = re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", low)
+    if words:
+        category_count = sum(1 for w in words if w in category_words)
+        if len(words) <= 6 and category_count >= max(1, len(words) - 1):
+            company_markers = ["ltd", "co", "inc", "llc", "gmbh", "a.ş", "a.s", "şti", "limited"]
+            if not any(m in low for m in company_markers):
+                return False
+
+    return bool(re.search(r"[A-Za-zÇĞİÖŞÜçğıöşü]", f))
+
+
+def kaynak_firmalarini_normalize_et(firmalar):
+    final, seen = [], set()
+    for firma in firmalar or []:
+        f = firma_adi_standartlastir(firma)
+        if not firma_adi_gecerli_mi(f):
+            continue
+        key = re.sub(r"\s+", " ", f.lower().strip())
+        if key and key not in seen:
+            seen.add(key)
+            final.append(f)
+    return final
+
+
+def enrichment_kalite_etiketi(res):
+    score = 0
+    if res.get("web_adresi") and res.get("web_adresi") != "Bulunamadi":
+        score += 40
+    if res.get("eposta") and res.get("eposta") != "Bulunamadi":
+        score += 35
+    if res.get("telefon") and res.get("telefon") != "Bulunamadi":
+        score += 25
+    if score >= 80:
+        return "Yüksek"
+    if score >= 40:
+        return "Orta"
+    return "Düşük"
+
+
+
 # ============================================================
 # PDF / EXCEL / MANUEL
 # ============================================================
@@ -3495,7 +3609,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V1.8.
+    PDF firma çıkarma motoru V2.0.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -3537,79 +3651,70 @@ def pdf_firmalari_oku(pdf_file):
             "Bu durumda OCR motoru gerekir."
         )
 
-    return firmalar
+    return kaynak_firmalarini_normalize_et(firmalar)
 
 
 def excel_firmalari_oku(excel_file):
+    """
+    Excel firma çıkarma motoru V2.0.
+    Firma/Company/Exhibitor içeren kolonu otomatik bulur.
+    Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
+    """
     try:
         df_upload = pd.read_excel(excel_file)
-
         if df_upload.empty:
             return []
 
-        ilk_sutun = df_upload.iloc[:, 0].dropna().astype(str).tolist()
-        return firma_listesi_filtrele(ilk_sutun)
+        preferred_keywords = [
+            "firma", "firma adı", "firma adi", "company", "company name",
+            "exhibitor", "exhibitor name", "katılımcı", "katilimci",
+            "organization", "organisation", "brand"
+        ]
+
+        selected_col = None
+        for col in df_upload.columns:
+            col_low = str(col).lower().strip()
+            if any(k in col_low for k in preferred_keywords):
+                selected_col = col
+                break
+
+        if selected_col is None:
+            best_score = -1
+            best_col = df_upload.columns[0]
+            for col in df_upload.columns:
+                values = df_upload[col].dropna().astype(str).head(250).tolist()
+                if not values:
+                    continue
+                valid_count = sum(1 for v in values if firma_adi_gecerli_mi(v))
+                url_email_count = sum(1 for v in values if re.search(r"https?://|www\.|@", v.lower()))
+                score = valid_count - (url_email_count * 2)
+                if score > best_score:
+                    best_score = score
+                    best_col = col
+            selected_col = best_col
+
+        firmalar = df_upload[selected_col].dropna().astype(str).tolist()
+        return kaynak_firmalarini_normalize_et(firmalar)
 
     except Exception as e:
         raise Exception(f"Excel okuma hatasi: {str(e)}")
 
 
 def listeye_ekle(yeni_firmalar, listeyi_sifirla=False):
-    yeni_firmalar = firma_listesi_filtrele(yeni_firmalar)
+    """
+    Tüm kaynaklardan gelen firmalar bu kapıdan havuza girer.
+    URL/PDF/Excel/Manuel fark etmeksizin normalize edilir.
+    """
+    yeni_firmalar = kaynak_firmalarini_normalize_et(yeni_firmalar)
 
     if listeyi_sifirla:
         st.session_state["ana_liste"] = yeni_firmalar
     else:
         mevcut = st.session_state["ana_liste"]
         birlesik = mevcut + yeni_firmalar
-        st.session_state["ana_liste"] = firma_listesi_filtrele(birlesik)
+        st.session_state["ana_liste"] = kaynak_firmalarini_normalize_et(birlesik)
 
     return len(yeni_firmalar)
-
-
-
-def sure_formatla(saniye):
-    try:
-        saniye = int(saniye)
-        dk = saniye // 60
-        sn = saniye % 60
-        if dk <= 0:
-            return f"{sn} sn"
-        return f"{dk} dk {sn} sn"
-    except Exception:
-        return "-"
-
-
-
-def tarama_modu_ayarlari(mod):
-    """
-    Hız / güvenlik dengesi.
-    Hızlı: Daha fazla paralel firma, az sorgu, Playwright fallback kapalı.
-    Dengeli: Orta paralellik, orta sorgu, Playwright fallback açık.
-    Derin: Daha az paralellik, fazla sorgu, Playwright fallback açık.
-    """
-    if mod == "Hızlı Tarama":
-        return {
-            "workers": 6,
-            "query_limit": 2,
-            "playwright_fallback": False,
-            "aciklama": "Hızlı mod: En seri mod. Firma başına az sorgu dener, tarayıcı fallback kapalıdır."
-        }
-
-    if mod == "Derin Tarama":
-        return {
-            "workers": 1,
-            "query_limit": 8,
-            "playwright_fallback": True,
-            "aciklama": "Derin mod: Eksik kalan firmalar için kullanılır. Yavaş ama daha güçlüdür."
-        }
-
-    return {
-        "workers": 4,
-        "query_limit": 4,
-        "playwright_fallback": False,
-        "aciklama": "Dengeli mod: Çökmeden hızlı çalışması için güvenli ayar. Tarayıcı fallback kapalıdır."
-    }
 
 
 # ============================================================
@@ -3954,6 +4059,12 @@ if st.session_state["ana_liste"]:
                         }
 
                     res["fuar_etiketi"] = fuar_etiketi
+                    try:
+                        kalite = enrichment_kalite_etiketi(res)
+                        if res.get("durum"):
+                            res["durum"] = f"{res.get('durum')} | Kalite: {kalite}"
+                    except Exception:
+                        pass
                     kayitlar.append(res)
 
                     try:
@@ -4089,6 +4200,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.8
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.0
 </div>
 """, unsafe_allow_html=True)
