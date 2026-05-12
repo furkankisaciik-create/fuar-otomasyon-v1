@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 import concurrent.futures
 import pdfplumber
-from urllib.parse import urlparse, urljoin, quote_plus, parse_qs
+from urllib.parse import urlparse, urljoin, quote_plus, parse_qs, unquote
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -1089,26 +1089,103 @@ def firmalari_url_den_cek_playwright(url):
 # WEBSITE BULMA VE ILETISIM CEKME
 # ============================================================
 
+def arama_linkini_temizle(href):
+    """
+    Bing / DuckDuckGo arama sonucu linklerini gerçek web sitesine çevirir.
+    Bing bazen /ck/a?...&u=a1aHR0cHM... şeklinde base64 benzeri link verir.
+    DuckDuckGo ise uddg parametresinde gerçek URL taşır.
+    """
+    if not href:
+        return ""
+
+    href = str(href).strip()
+
+    if href.lower().startswith(("javascript:", "mailto:", "tel:", "#", "data:", "about:")):
+        return ""
+
+    if "javascript:void" in href.lower():
+        return ""
+
+    # DuckDuckGo yönlendirme çöz
+    if "uddg=" in href:
+        try:
+            parsed = urlparse(href)
+            qs = parse_qs(parsed.query)
+            if "uddg" in qs:
+                return unquote(qs["uddg"][0])
+        except Exception:
+            return ""
+
+    # Bing /ck/a yönlendirme çöz
+    if href.startswith("/ck/a") or "bing.com/ck/a" in href:
+        try:
+            parsed = urlparse(href)
+            qs = parse_qs(parsed.query)
+            u = qs.get("u", [""])[0]
+
+            if u:
+                # Bing genellikle a1 + base64url şeklinde verir
+                if u.startswith("a1"):
+                    encoded = u[2:]
+                    padding = "=" * (-len(encoded) % 4)
+                    try:
+                        import base64
+                        decoded = base64.urlsafe_b64decode(encoded + padding).decode("utf-8", errors="ignore")
+                        if decoded.startswith("http"):
+                            return decoded
+                    except Exception:
+                        pass
+
+                # Bazen düz URL encode olur
+                u2 = unquote(u)
+                if u2.startswith("http"):
+                    return u2
+        except Exception:
+            return ""
+
+    # Bing bazen tam link yerine /url?q= benzeri verebilir
+    if "url=" in href or "q=" in href:
+        try:
+            parsed = urlparse(href)
+            qs = parse_qs(parsed.query)
+            for key in ["url", "q"]:
+                val = qs.get(key, [""])[0]
+                val = unquote(val)
+                if val.startswith("http"):
+                    return val
+        except Exception:
+            pass
+
+    return href
+
+
+
 def firma_websitesi_bul(firma_adi):
     """
     Firma adından resmi web sitesini bulmaya çalışır.
-    Önemli düzeltme:
-    - javascript:void(0), mailto, tel gibi sahte linkleri web sitesi sanmaz.
-    - Bing/DuckDuckGo arama iç linklerini ve sosyal medya linklerini eler.
+    V4.4:
+    - Bing /ck/a redirect linklerini çözer.
+    - DuckDuckGo uddg linklerini çözer.
+    - javascript:void(0) gibi sahte linkleri elemezden gelir.
     """
-    sorgu = quote_plus(f"{firma_adi} resmi web sitesi")
-    alternatif_sorgu = quote_plus(f"{firma_adi} official website contact")
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
 
-    arama_url_listesi = [
-        f"https://www.bing.com/search?q={sorgu}",
-        f"https://www.bing.com/search?q={alternatif_sorgu}",
-        f"https://duckduckgo.com/html/?q={sorgu}",
-        f"https://duckduckgo.com/html/?q={alternatif_sorgu}"
+    sorgular = [
+        quote_plus(f'"{firma_adi_temiz}" resmi web sitesi'),
+        quote_plus(f'"{firma_adi_temiz}" iletişim'),
+        quote_plus(f'"{firma_adi_temiz}" official website'),
+        quote_plus(f'{firma_adi_temiz} web sitesi')
     ]
+
+    arama_url_listesi = []
+
+    for sorgu in sorgular:
+        arama_url_listesi.append(f"https://www.bing.com/search?q={sorgu}")
+        arama_url_listesi.append(f"https://duckduckgo.com/html/?q={sorgu}")
 
     for arama_url in arama_url_listesi:
         try:
-            time.sleep(random.uniform(0.8, 1.8))
+            time.sleep(random.uniform(1.0, 2.2))
             res = guvenli_get(arama_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
 
             if res.status_code >= 400:
@@ -1117,33 +1194,12 @@ def firma_websitesi_bul(firma_adi):
             soup = BeautifulSoup(res.text, "html.parser")
             linkler = []
 
-            for a in soup.find_all("a", href=True):
-                href = a.get("href", "").strip()
+            # Önce Bing organik sonuç başlık linkleri
+            for a in soup.select("li.b_algo h2 a[href], h2 a[href], a[href]"):
+                href_raw = a.get("href", "").strip()
+                href = arama_linkini_temizle(href_raw)
 
                 if not href:
-                    continue
-
-                low_href = href.lower().strip()
-
-                # Sahte veya aksiyon linkleri
-                if low_href.startswith(("javascript:", "mailto:", "tel:", "#", "data:", "about:")):
-                    continue
-
-                if "javascript:void" in low_href:
-                    continue
-
-                # DuckDuckGo yönlendirme linkleri
-                if "uddg=" in href:
-                    try:
-                        parsed = urlparse(href)
-                        qs = parse_qs(parsed.query)
-                        if "uddg" in qs:
-                            href = qs["uddg"][0]
-                    except Exception:
-                        continue
-
-                # Bing yönlendirme linkleri bazen /ck/a?... içinde gelir; bunları şimdilik atlıyoruz
-                if href.startswith("/"):
                     continue
 
                 href = normalize_url(href)
@@ -1156,16 +1212,16 @@ def firma_websitesi_bul(firma_adi):
 
                 domain = domain_al(href)
 
-                if not domain:
+                if not domain or len(domain) < 4:
                     continue
 
-                # Çok kısa / anlamsız domainleri ele
-                if len(domain) < 4:
+                # Dosya, görsel, pdf vb. direkt sonuçları ele
+                if any(href.lower().endswith(ext) for ext in [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".doc", ".docx", ".xls", ".xlsx"]):
                     continue
 
                 linkler.append(href)
 
-            # Mükerrer domainleri ayıkla
+            # Domain mükerrerlerini temizle
             temiz_linkler = []
             gorulen_domain = set()
 
@@ -1179,8 +1235,30 @@ def firma_websitesi_bul(firma_adi):
                 return temiz_linkler[0]
 
         except Exception as e:
-            logging.warning(f"Arama hatasi: {firma_adi} - {str(e)}")
+            logging.warning(f"Arama hatasi: {firma_adi_temiz} - {str(e)}")
             continue
+
+    # Son çare: firma adından domain tahmini yap
+    # Bu sadece web bulunamadığında denenir; doğrulama başarılı olursa döner.
+    try:
+        domain_aday = firma_adi_temiz.lower()
+        domain_aday = domain_aday.replace("ı", "i").replace("ğ", "g").replace("ü", "u").replace("ş", "s").replace("ö", "o").replace("ç", "c")
+        domain_aday = re.sub(r"\b(a\.ş\.?|as|anonim|sanayi|san|ticaret|tic|ltd|şti|sti|limited|şirketi|sirketi|ve|ile)\b", " ", domain_aday)
+        domain_aday = re.sub(r"[^a-z0-9\s-]", " ", domain_aday)
+        parts = [p for p in domain_aday.split() if len(p) > 1]
+        base = "".join(parts[:3])
+
+        if len(base) >= 4:
+            for ext in [".com.tr", ".com", ".net", ".org"]:
+                test_url = f"https://www.{base}{ext}"
+                try:
+                    r = guvenli_get(test_url, timeout=6, referer="https://www.google.com/")
+                    if r.status_code < 400:
+                        return test_url
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
     return ""
 
