@@ -61,6 +61,12 @@ DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 15
 
+# Tarama modu ayarlari runtime'da sidebar'dan guncellenir
+SCAN_MODE = "Dengeli"
+SEARCH_QUERY_LIMIT = 6
+PLAYWRIGHT_FALLBACK_ENABLED = True
+WEBSITE_CACHE = {}
+
 
 # ============================================================
 # STREAMLIT AYARLARI
@@ -96,6 +102,10 @@ if "son_hatalar" not in st.session_state:
 
 if "son_islem_ozeti" not in st.session_state:
     st.session_state["son_islem_ozeti"] = ""
+
+if "website_cache" not in st.session_state:
+    st.session_state["website_cache"] = {}
+
 
 
 # ============================================================
@@ -1387,7 +1397,7 @@ def firma_websitesi_bul(firma_adi):
     - Son çare domain tahmini yapar.
     """
     firma_adi_temiz = firma_adi_temizle(firma_adi)
-    sorgular = firma_arama_sorgulari_uret(firma_adi_temiz)
+    sorgular = firma_arama_sorgulari_uret(firma_adi_temiz)[:SEARCH_QUERY_LIMIT]
 
     bulunan_linkler = []
 
@@ -1437,8 +1447,8 @@ def firma_websitesi_bul(firma_adi):
             break
 
     # 2) Requests sonuç vermezse Playwright DuckDuckGo araması
-    if not bulunan_linkler:
-        for sorgu_text in sorgular[:5]:
+    if not bulunan_linkler and PLAYWRIGHT_FALLBACK_ENABLED:
+        for sorgu_text in sorgular[:max(1, min(3, SEARCH_QUERY_LIMIT))]:
             bulunan_linkler.extend(playwright_arama_linkleri_bul(sorgu_text))
             if bulunan_linkler:
                 break
@@ -1622,7 +1632,12 @@ def derin_bilgi_bul(firma_adi):
     try:
         time.sleep(random.uniform(1.0, 2.5))
 
-        web = firma_websitesi_bul(firma_adi)
+        cache_key = firma_adi.lower().strip()
+        if cache_key in WEBSITE_CACHE:
+            web = WEBSITE_CACHE[cache_key]
+        else:
+            web = firma_websitesi_bul(firma_adi)
+            WEBSITE_CACHE[cache_key] = web
 
         if not web:
             sonuc["durum"] = "Web sitesi bulunamadi"
@@ -1704,6 +1719,38 @@ def sure_formatla(saniye):
         return "-"
 
 
+
+def tarama_modu_ayarlari(mod):
+    """
+    Hız / güvenlik dengesi.
+    Hızlı: Daha fazla paralel firma, az sorgu, Playwright fallback kapalı.
+    Dengeli: Orta paralellik, orta sorgu, Playwright fallback açık.
+    Derin: Daha az paralellik, fazla sorgu, Playwright fallback açık.
+    """
+    if mod == "Hızlı Tarama":
+        return {
+            "workers": 6,
+            "query_limit": 3,
+            "playwright_fallback": False,
+            "aciklama": "Hızlı mod: Web sitesi bulmaya odaklanır, daha az sorgu dener."
+        }
+
+    if mod == "Derin Tarama":
+        return {
+            "workers": 2,
+            "query_limit": 10,
+            "playwright_fallback": True,
+            "aciklama": "Derin mod: Daha yavaş ama eksik kalan firmalar için daha güçlü arama yapar."
+        }
+
+    return {
+        "workers": 4,
+        "query_limit": 6,
+        "playwright_fallback": True,
+        "aciklama": "Dengeli mod: Hız ve doğruluk arasında güvenli ayar."
+    }
+
+
 # ============================================================
 # ARAYUZ
 # ============================================================
@@ -1723,13 +1770,30 @@ with st.sidebar:
 
     fuar_etiketi = st.text_input("Fuar Etiketi", value="Genel_Liste")
 
+    tarama_modu = st.selectbox(
+        "Tarama Modu",
+        ["Hızlı Tarama", "Dengeli", "Derin Tarama"],
+        index=1,
+        help="Hızlı mod daha seri çalışır; Derin mod eksikleri bulmak için daha fazla arama yapar."
+    )
+
+    mod_ayar = tarama_modu_ayarlari(tarama_modu)
+
     max_workers = st.slider(
-        "Ayni anda taranacak firma sayisi",
+        "Aynı anda taranacak firma sayısı",
         min_value=1,
         max_value=8,
-        value=MAX_WORKERS_DEFAULT,
-        help="Canli sunucuda hata alirsan 1-3 arasi kullan."
+        value=mod_ayar["workers"],
+        help="Streamlit Cloud için 4-6 arası genelde güvenlidir. Çökme olursa düşür."
     )
+
+    global SCAN_MODE, SEARCH_QUERY_LIMIT, PLAYWRIGHT_FALLBACK_ENABLED
+    SCAN_MODE = tarama_modu
+    SEARCH_QUERY_LIMIT = mod_ayar["query_limit"]
+    PLAYWRIGHT_FALLBACK_ENABLED = mod_ayar["playwright_fallback"]
+
+    st.caption(mod_ayar["aciklama"])
+    st.caption(f"Firma başına arama limiti: {SEARCH_QUERY_LIMIT} | Playwright fallback: {'Açık' if PLAYWRIGHT_FALLBACK_ENABLED else 'Kapalı'}")
 
     listeyi_sifirla = st.checkbox("Yeni veri eklenince mevcut havuzu sifirla", value=True)
 
@@ -1936,15 +2000,20 @@ if st.session_state["ana_liste"]:
 
     if tara:
         firmalar = st.session_state["ana_liste"]
+        toplam_firma = len(firmalar)
+        baslangic_tarama = time.time()
 
         progress_bar = st.progress(0)
         status_area = st.empty()
+        metrik_area = st.empty()
         sonuc_placeholder = st.empty()
 
         kayitlar = []
         basarili = 0
         web_bulunamadi = 0
         hata_sayisi = 0
+
+        status_area.info(f"🚀 {SCAN_MODE} başladı. Aynı anda {max_workers} firma taranıyor.")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(derin_bilgi_bul, firma): firma for firma in firmalar}
@@ -1975,10 +2044,28 @@ if st.session_state["ana_liste"]:
                 elif res.get("durum") == "Hata":
                     hata_sayisi += 1
 
-                progress_bar.progress((i + 1) / len(firmalar))
-                status_area.info(f"Isleniyor: {i + 1}/{len(firmalar)} | Son firma: {firma}")
+                tamamlanan = i + 1
+                oran = tamamlanan / toplam_firma
+                gecen = time.time() - baslangic_tarama
+                tahmini_toplam = gecen / tamamlanan * toplam_firma if tamamlanan else 0
+                kalan = max(tahmini_toplam - gecen, 0)
 
-                if len(kayitlar) % 5 == 0 or i == len(firmalar) - 1:
+                progress_bar.progress(oran)
+                status_area.info(f"İşleniyor: {tamamlanan}/{toplam_firma} | Son firma: {firma}")
+
+                metrik_area.markdown(
+                    f"""
+                    **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
+                    **Paralel işlem:** {max_workers} &nbsp;&nbsp; | &nbsp;&nbsp;
+                    **Başarılı:** {basarili} &nbsp;&nbsp; | &nbsp;&nbsp;
+                    **Web bulunamadı:** {web_bulunamadi} &nbsp;&nbsp; | &nbsp;&nbsp;
+                    **Hata:** {hata_sayisi} &nbsp;&nbsp; | &nbsp;&nbsp;
+                    **Geçen:** {sure_formatla(gecen)} &nbsp;&nbsp; | &nbsp;&nbsp;
+                    **Tahmini kalan:** {sure_formatla(kalan)}
+                    """
+                )
+
+                if len(kayitlar) % 5 == 0 or i == toplam_firma - 1:
                     sonuc_placeholder.dataframe(pd.DataFrame(kayitlar), use_container_width=True)
 
         verileri_toplu_kaydet(kayitlar)
