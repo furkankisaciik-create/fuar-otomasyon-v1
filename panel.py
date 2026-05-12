@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.7"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.8"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V1.7
+            Fuar Müşteri Otomasyonu V1.8
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.7</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.8</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -3112,6 +3112,10 @@ PDF_PRODUCT_GROUPS = [
     "Perfumery",
     "Personal Care Products",
     "Personal Care",
+    "Personel Care",
+    "Care Products",
+    "Hair Care",
+    "Cleaning & Hygiene Products; Personal",
     "Pharmaceutical & OTC Products",
     "Private Label & Contract Manufacturing",
     "Private Label",
@@ -3254,6 +3258,96 @@ def pdf_satir_temizle(line):
     return t.strip(" -–|•,:;")
 
 
+
+def pdf_cop_veri_mi(text):
+    """
+    PDF'de firma gibi görünen ama aslında kategori/footer/tarih/slogan olan satırları eler.
+    BeautyEurasia gibi kataloglarda son sayfalardan gelen çöp verileri temizler.
+    """
+    if not text:
+        return True
+
+    t = firma_adi_temizle(text)
+    low = t.lower().strip()
+
+    if not low:
+        return True
+
+    # Çok kısa ve genel kategori kelimeleri
+    exact_garbage = {
+        "care products", "personal care", "personel care", "hair care",
+        "cosmetics", "kozmetik", "packaging", "machinery", "perfumery",
+        "dermocosmetics", "natural cosmetics", "organic cosmetics",
+        "baby care", "cleaning", "hygiene", "colour cosmetics",
+        "raw materials", "ingredients", "private label", "media",
+        "associations", "agencies", "services", "beauty technology",
+        "php#none", "productlist.html", "index.html",
+        "gelecek sene", "görüşmek üzere", "gorusmek uzere",
+        "see you next year", "see you next year!",
+        "thank you", "thanks", "contact us"
+    }
+
+    if low in exact_garbage:
+        return True
+
+    # Fuar footer / tarih / kapanış mesajları
+    footer_patterns = [
+        r"see\s+you\s+next\s+year",
+        r"gelecek\s+sene",
+        r"görüşmek\s+üzere",
+        r"gorusmek\s+uzere",
+        r"\b\d{1,2}\s*[-–]\s*\d{1,2}\s*(eylül|eylul|september|june|haziran|may|nisan|april)\b",
+        r"\b(eylül|eylul|september|june|haziran)\s+20\d{2}\b",
+        r"\b20\d{2}\b\s*$",
+    ]
+
+    if any(re.search(p, low, flags=re.I) for p in footer_patterns):
+        return True
+
+    # Web kırıntıları
+    if re.search(r"php#|\.html?$|productlist|index\.|/#none|com/_", low):
+        return True
+
+    # Ürün kategorisi gibi duran satırlar
+    category_words = [
+        "products", "product", "care", "cosmetics", "cosmetic", "hygiene",
+        "cleaning", "packaging", "machinery", "materials", "ingredients",
+        "perfumery", "dermocosmetics", "pharmaceutical", "equipment",
+        "equipments", "services", "media", "association", "agencies",
+        "label", "manufacturing", "nail", "hair", "baby", "organic",
+        "natural", "colour", "color", "raw"
+    ]
+
+    words = re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", low)
+    if words:
+        category_count = sum(1 for w in words if w in category_words)
+        # 1-5 kelimelik satırların çoğu kategori kelimesiyse firma değildir
+        if len(words) <= 6 and category_count >= max(1, len(words) - 1):
+            return True
+
+    # Noktalı virgüllü ürün grubu kırıntıları
+    if ";" in t and any(w in low for w in ["products", "care", "cosmetics", "hygiene", "packaging"]):
+        return True
+
+    # Sadece küçük harfli web/kırıntı benzeri tek kelime
+    if len(t.split()) == 1 and re.fullmatch(r"[a-z0-9_\-/#.]+", low):
+        if not any(marker in low for marker in ["ltd", "inc", "llc", "gmbh"]):
+            return True
+
+    # Firma gibi olmayan kısa başlıklar
+    if len(t.split()) <= 2 and any(w in low for w in [
+        "care", "products", "cosmetics", "packaging", "hygiene", "perfumery",
+        "machinery", "media", "services"
+    ]):
+        # "ABC Cosmetics" gibi gerçek firma ihtimalini korumak için şirket marker yoksa ele
+        company_markers = ["ltd", "co", "inc", "llc", "gmbh", "a.ş", "a.s", "şti", "limited"]
+        if not any(m in low for m in company_markers):
+            return True
+
+    return False
+
+
+
 def pdf_firma_adayi_mi(text):
     """
     PDF içinden gelen satırın firma adı olup olmadığını değerlendirir.
@@ -3265,6 +3359,9 @@ def pdf_firma_adayi_mi(text):
     low = t.lower()
 
     if not t:
+        return False
+
+    if pdf_cop_veri_mi(t):
         return False
 
     if len(t) < 3 or len(t) > 120:
@@ -3379,6 +3476,9 @@ def pdf_adaylari_son_temizle(adaylar):
         if not pdf_firma_adayi_mi(a):
             continue
 
+        if pdf_cop_veri_mi(a):
+            continue
+
         low = a.lower().strip()
 
         # Çok kısa veya kategori gibi görünen başlıkları ele
@@ -3395,7 +3495,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V1.7.
+    PDF firma çıkarma motoru V1.8.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -3989,6 +4089,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.7
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.8
 </div>
 """, unsafe_allow_html=True)
