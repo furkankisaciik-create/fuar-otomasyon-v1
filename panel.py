@@ -580,6 +580,139 @@ def firma_listesi_filtrele(adaylar):
 
 
 
+
+def musiad_katilimci_listesi_cek(url):
+    """
+    MÜSİAD Expo özel motoru.
+    Katılımcı tablosundaki tüm sayfaları Sonraki butonu ile dolaşır.
+    Sadece Katılımcı sütunundaki firma adlarını alır.
+    """
+    if not PLAYWRIGHT_AKTIF:
+        raise Exception("Playwright aktif değil. MÜSİAD özel motoru çalışamaz.")
+
+    url = normalize_url(url)
+    firmalar = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-blink-features=AutomationControlled"
+            ]
+        )
+
+        page = browser.new_page(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            viewport={"width": 1400, "height": 900},
+            locale="tr-TR"
+        )
+
+        page.goto(url, wait_until="networkidle", timeout=60000)
+        page.wait_for_timeout(5000)
+
+        # Tablo yüklenene kadar kısa denemeler
+        for _ in range(10):
+            try:
+                if page.locator("table tbody tr").count() > 0:
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(1000)
+
+        sayfa_sayisi = 0
+        max_sayfa = 50
+
+        while sayfa_sayisi < max_sayfa:
+            sayfa_sayisi += 1
+            page.wait_for_timeout(1200)
+
+            # Tablo satırlarından ilk hücreyi yani Katılımcı sütununu al
+            rows = page.locator("table tbody tr")
+            row_count = rows.count()
+
+            for i in range(row_count):
+                try:
+                    first_cell = rows.nth(i).locator("td").nth(0).inner_text(timeout=3000)
+                    firma = firma_adi_temizle(first_cell)
+                    firma = musiad_firma_adi_temizle(firma)
+                    if firma and sadece_firma_unvani_mi(firma):
+                        firmalar.append(firma)
+                except Exception:
+                    continue
+
+            # Sonraki butonunu bul
+            next_candidates = [
+                "button:has-text('Sonraki')",
+                "a:has-text('Sonraki')",
+                "button:has-text('Next')",
+                "a:has-text('Next')",
+                "[aria-label*='Sonraki']",
+                "[aria-label*='Next']"
+            ]
+
+            next_button = None
+            for sel in next_candidates:
+                try:
+                    loc = page.locator(sel).last
+                    if loc.count() > 0 and loc.is_visible():
+                        next_button = loc
+                        break
+                except Exception:
+                    continue
+
+            if next_button is None:
+                break
+
+            try:
+                disabled_attr = next_button.get_attribute("disabled")
+                aria_disabled = next_button.get_attribute("aria-disabled")
+                class_attr = next_button.get_attribute("class") or ""
+
+                if disabled_attr is not None or aria_disabled == "true" or "disabled" in class_attr.lower():
+                    break
+
+                onceki_ilk = ""
+                try:
+                    if row_count > 0:
+                        onceki_ilk = rows.nth(0).locator("td").nth(0).inner_text(timeout=1000)
+                except Exception:
+                    pass
+
+                next_button.click(timeout=5000)
+                page.wait_for_timeout(2500)
+
+                # Sayfanın değişmesini bekle
+                for _ in range(10):
+                    try:
+                        yeni_rows = page.locator("table tbody tr")
+                        if yeni_rows.count() > 0:
+                            yeni_ilk = yeni_rows.nth(0).locator("td").nth(0).inner_text(timeout=1000)
+                            if yeni_ilk != onceki_ilk:
+                                break
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(800)
+
+            except Exception:
+                break
+
+        browser.close()
+
+    # Mükerrerleri sil
+    final = []
+    seen = set()
+    for f in firmalar:
+        key = f.lower().strip()
+        if key not in seen:
+            seen.add(key)
+            final.append(f)
+
+    return final
+
+
 # ============================================================
 # URL'DEN FIRMA CEKME
 # ============================================================
@@ -1067,7 +1200,16 @@ with t1:
         else:
             try:
                 with st.spinner("URL okunuyor ve firma isimleri cikariliyor..."):
-                    firmalar = firmalari_url_den_cek(url_input)
+                    firmalar = []
+
+                    # MÜSİAD özel tablo motoru: tüm sayfaları dolaşır ve Katılımcı sütununu alır
+                    if "musiadexpo.com" in url_input.lower():
+                        st.info("MÜSİAD özel katılımcı motoru çalışıyor. Tüm sayfalar dolaşılıyor...")
+                        firmalar = musiad_katilimci_listesi_cek(url_input)
+
+                    # Genel motorlar
+                    if not firmalar:
+                        firmalar = firmalari_url_den_cek(url_input)
 
                     if not firmalar:
                         st.warning("Statik HTML icinde firma bulunamadi. JavaScript tarayici motoru deneniyor...")
