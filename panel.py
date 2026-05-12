@@ -15,6 +15,12 @@ from urllib.parse import urlparse, urljoin, quote_plus
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AKTIF = True
+except Exception:
+    PLAYWRIGHT_AKTIF = False
+
 # ============================================================
 # SQUAREXPO FUAR MÜŞTERİ OTOMASYONU V3
 # Daha dayanıklı canlı sürüm
@@ -412,6 +418,84 @@ def firma_listesi_filtrele(adaylar):
     return sorted(sonuc)
 
 
+def firmalari_url_den_cek_playwright(url):
+    """
+    JavaScript ile yüklenen fuar sayfaları için gerçek tarayıcı motoru.
+    Streamlit Cloud / VPS üzerinde çalışması için playwright ve chromium kurulmalıdır.
+    """
+    if not PLAYWRIGHT_AKTIF:
+        raise Exception("Playwright kurulu değil. Terminalde: pip install playwright && playwright install chromium")
+
+    url = normalize_url(url)
+    adaylar = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-blink-features=AutomationControlled"
+            ]
+        )
+
+        page = browser.new_page(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            viewport={"width": 1366, "height": 768},
+            locale="tr-TR"
+        )
+
+        page.goto(url, wait_until="networkidle", timeout=60000)
+        page.wait_for_timeout(5000)
+
+        # Sayfa aşağı kaydırılır; lazy-load varsa firmalar yüklensin
+        for _ in range(6):
+            page.mouse.wheel(0, 2500)
+            page.wait_for_timeout(1200)
+
+        html = page.content()
+        text = page.inner_text("body")
+
+        browser.close()
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # HTML taglerinden aday çıkar
+    selectorler = [
+        "a", "h1", "h2", "h3", "h4", "h5",
+        "div", "span", "p",
+        "[class*='exhibitor']", "[class*='company']", "[class*='firma']",
+        "[class*='katilimci']", "[class*='participant']",
+        "[title]", "[data-title]", "[data-name]"
+    ]
+
+    for sel in selectorler:
+        try:
+            for item in soup.select(sel):
+                texts = [
+                    item.get_text(" "),
+                    item.get("title"),
+                    item.get("data-title"),
+                    item.get("data-name"),
+                    item.get("alt"),
+                ]
+                for t in texts:
+                    temiz = firma_adi_temizle(t)
+                    if temiz:
+                        adaylar.append(temiz)
+        except Exception:
+            continue
+
+    # Body text satırlarından aday çıkar
+    for line in text.split("\n"):
+        temiz = firma_adi_temizle(line)
+        if temiz:
+            adaylar.append(temiz)
+
+    return firma_listesi_filtrele(adaylar)
+
+
 # ============================================================
 # WEB SİTESİ BULMA
 # ============================================================
@@ -717,6 +801,10 @@ st.caption("Katılımcı listesi URL / PDF / Excel / manuel girişten firma havu
 
 with st.sidebar:
     st.header("⚙️ Tarama Ayarları")
+    if PLAYWRIGHT_AKTIF:
+        st.success("Playwright aktif: JS sayfaları okunabilir.")
+    else:
+        st.warning("Playwright pasif: Sadece statik HTML okunur.")
     fuar_etiketi = st.text_input("Fuar Etiketi", value="Genel_Liste")
 
     max_workers = st.slider(
@@ -764,13 +852,19 @@ with t1:
             try:
                 with st.spinner("URL okunuyor ve firma isimleri çıkarılıyor..."):
                     firmalar = firmalari_url_den_cek(url_input)
+
+                    # Statik HTML'den sonuç çıkmazsa gerçek tarayıcı motorunu dene
+                    if not firmalar:
+                        st.warning("Statik HTML içinde firma bulunamadı. JavaScript tarayıcı motoru deneniyor...")
+                        firmalar = firmalari_url_den_cek_playwright(url_input)
+
                     adet = listeye_ekle(firmalar, listeyi_sifirla=listeyi_sifirla)
 
                 if adet > 0:
                     st.success(f"✅ {adet} firma havuza aktarıldı.")
                     st.rerun()
                 else:
-                    st.error("Bu URL'den firma adı çıkarılamadı. Sayfa JavaScript ile yükleniyor olabilir veya site bot erişimini kısıtlıyor olabilir.")
+                    st.error("Bu URL'den firma adı çıkarılamadı. Site veriyi gizli API ile çekiyor veya bot erişimini kısıtlıyor olabilir.")
             except Exception as e:
                 hata_kaydet(f"URL tarama hatası: {str(e)}")
                 st.error(f"URL tarama hatası: {str(e)}")
