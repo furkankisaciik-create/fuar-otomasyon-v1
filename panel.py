@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "SQUAREXPO Fuar Musteri Otomasyonu V3.2"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.0"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -77,6 +77,306 @@ st.set_page_config(
     layout="wide",
     page_icon="🚀"
 )
+
+
+# ============================================================
+# GORSEL TASARIM / KURUMSAL UI
+# ============================================================
+
+def kurumsal_tasarim_yukle():
+    st.markdown("""
+    <style>
+    .stApp {
+        background:
+            radial-gradient(circle at top left, rgba(37,99,235,0.16), transparent 32%),
+            radial-gradient(circle at top right, rgba(124,58,237,0.12), transparent 28%),
+            linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+    }
+
+    section.main > div {
+        padding-top: 1.4rem;
+    }
+
+    .block-container {
+        max-width: 1280px;
+        padding-top: 1rem;
+    }
+
+    .hero-banner {
+        position: relative;
+        overflow: hidden;
+        border-radius: 26px;
+        padding: 34px 38px;
+        min-height: 245px;
+        background:
+            linear-gradient(120deg, rgba(7,19,48,0.98), rgba(12,34,84,0.96) 45%, rgba(10,15,35,0.96)),
+            radial-gradient(circle at 75% 30%, rgba(59,130,246,0.45), transparent 25%);
+        box-shadow: 0 24px 70px rgba(15,23,42,0.24);
+        border: 1px solid rgba(255,255,255,0.18);
+        color: white;
+        margin-bottom: 22px;
+    }
+
+    .hero-banner:before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+            linear-gradient(90deg, transparent, rgba(59,130,246,0.26), transparent),
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.04) 0px, rgba(255,255,255,0.04) 1px, transparent 1px, transparent 80px);
+        opacity: .85;
+    }
+
+    .hero-glow {
+        position: absolute;
+        width: 620px;
+        height: 90px;
+        left: 18%;
+        bottom: 18px;
+        background: linear-gradient(90deg, #2563eb, #7c3aed, #06b6d4);
+        filter: blur(24px);
+        opacity: .72;
+        transform: rotate(-5deg);
+    }
+
+    .hero-content {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        grid-template-columns: 1.1fr 1.2fr;
+        gap: 32px;
+        align-items: center;
+    }
+
+    .brand-row {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        margin-bottom: 22px;
+        flex-wrap: wrap;
+    }
+
+    .brand-pill {
+        border: 1px solid rgba(255,255,255,0.20);
+        background: rgba(255,255,255,0.08);
+        backdrop-filter: blur(12px);
+        padding: 14px 18px;
+        border-radius: 18px;
+        min-width: 190px;
+    }
+
+    .brand-pill strong {
+        display: block;
+        font-size: 25px;
+        letter-spacing: 2px;
+        line-height: 1;
+    }
+
+    .brand-pill span {
+        display: block;
+        margin-top: 7px;
+        color: rgba(255,255,255,0.75);
+        font-size: 12px;
+        letter-spacing: 1.5px;
+    }
+
+    .hero-title {
+        font-size: 48px;
+        line-height: 1.05;
+        font-weight: 800;
+        margin: 0;
+        letter-spacing: -1.2px;
+    }
+
+    .hero-subtitle {
+        margin-top: 16px;
+        font-size: 18px;
+        color: rgba(255,255,255,0.82);
+        max-width: 610px;
+    }
+
+    .hero-meta {
+        display: flex;
+        gap: 12px;
+        margin-top: 24px;
+        flex-wrap: wrap;
+    }
+
+    .meta-chip {
+        background: rgba(255,255,255,0.11);
+        border: 1px solid rgba(255,255,255,0.16);
+        padding: 10px 14px;
+        border-radius: 999px;
+        font-size: 13px;
+        color: rgba(255,255,255,0.88);
+    }
+
+    .hero-visual {
+        min-height: 180px;
+        border-radius: 22px;
+        border: 1px solid rgba(255,255,255,0.14);
+        background:
+            linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)),
+            radial-gradient(circle at center, rgba(96,165,250,0.34), transparent 50%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .hero-visual:after {
+        content: "";
+        position: absolute;
+        width: 300px;
+        height: 300px;
+        border: 1px solid rgba(96,165,250,0.24);
+        border-radius: 50%;
+        box-shadow: 0 0 55px rgba(96,165,250,0.30);
+    }
+
+    .hero-visual-inner {
+        position: relative;
+        z-index: 2;
+        font-size: 72px;
+        filter: drop-shadow(0 12px 30px rgba(37,99,235,0.45));
+    }
+
+    .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+        margin: 20px 0 24px;
+    }
+
+    .feature-card {
+        background: rgba(255,255,255,0.80);
+        border: 1px solid rgba(148,163,184,0.28);
+        border-radius: 20px;
+        padding: 18px;
+        box-shadow: 0 15px 40px rgba(15,23,42,0.08);
+    }
+
+    .feature-card .icon {
+        font-size: 28px;
+        margin-bottom: 10px;
+    }
+
+    .feature-card strong {
+        display: block;
+        color: #0f172a;
+        font-size: 16px;
+        margin-bottom: 6px;
+    }
+
+    .feature-card span {
+        color: #475569;
+        font-size: 13px;
+    }
+
+    div[data-testid="stTabs"] button {
+        font-size: 15px;
+        font-weight: 600;
+    }
+
+    div[data-testid="stVerticalBlock"] div[data-testid="stDataFrame"] {
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 14px 35px rgba(15,23,42,0.08);
+    }
+
+    .stButton > button {
+        border-radius: 14px !important;
+        border: 1px solid rgba(37,99,235,0.24) !important;
+        background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+        color: white !important;
+        font-weight: 700 !important;
+        box-shadow: 0 10px 24px rgba(37,99,235,0.22);
+    }
+
+    .stDownloadButton > button {
+        border-radius: 14px !important;
+        font-weight: 700 !important;
+    }
+
+    .footer-note {
+        text-align: center;
+        color: #64748b;
+        font-size: 13px;
+        padding: 26px 0 8px;
+    }
+
+    @media (max-width: 900px) {
+        .hero-content { grid-template-columns: 1fr; }
+        .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .hero-title { font-size: 36px; }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def kurumsal_banner_goster():
+    st.markdown("""
+    <div class="hero-banner">
+        <div class="hero-glow"></div>
+        <div class="hero-content">
+            <div>
+                <div class="brand-row">
+                    <div class="brand-pill">
+                        <strong>PERGE</strong>
+                        <span>MİMARLIK</span>
+                    </div>
+                    <div class="brand-pill">
+                        <strong>SQUAREXPO</strong>
+                        <span>FUAR | EXPO | EVENTS</span>
+                    </div>
+                </div>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.0</h1>
+                <div class="hero-subtitle">
+                    Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
+                </div>
+                <div class="hero-meta">
+                    <div class="meta-chip">🌐 URL Tarama</div>
+                    <div class="meta-chip">📄 PDF Analiz</div>
+                    <div class="meta-chip">📊 Excel Giriş</div>
+                    <div class="meta-chip">⚡ Hızlı Enrichment</div>
+                </div>
+            </div>
+            <div class="hero-visual">
+                <div class="hero-visual-inner">🏗️🌍🚀</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def ozellik_kartlari_goster():
+    st.markdown("""
+    <div class="feature-grid">
+        <div class="feature-card">
+            <div class="icon">🔎</div>
+            <strong>Akıllı Firma Çekimi</strong>
+            <span>URL, PDF, Excel ve manuel girişlerden firma isimlerini ayıklar.</span>
+        </div>
+        <div class="feature-card">
+            <div class="icon">🌐</div>
+            <strong>Web Sitesi Bulma</strong>
+            <span>Firma adından resmi web sitesini bulmaya çalışır.</span>
+        </div>
+        <div class="feature-card">
+            <div class="icon">📞</div>
+            <strong>İletişim Bilgisi</strong>
+            <span>Web sitesinden telefon ve e-posta bilgilerini çıkarır.</span>
+        </div>
+        <div class="feature-card">
+            <div class="icon">📥</div>
+            <strong>Excel Dışa Aktarım</strong>
+            <span>Sonuçları düzenli arşivler ve Excel olarak indirmenizi sağlar.</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 
 # ============================================================
@@ -1757,8 +2057,9 @@ def tarama_modu_ayarlari(mod):
 
 tabloyu_hazirla()
 
-st.title("🚀 SQUAREXPO Fuar Musteri Otomasyonu V3.2")
-st.caption("Katilimci listesi URL / PDF / Excel / manuel giristen firma havuzu olusturur; firma web sitesi, mail ve telefon bulmaya calisir.")
+kurumsal_tasarim_yukle()
+kurumsal_banner_goster()
+ozellik_kartlari_goster()
 
 with st.sidebar:
     st.header("⚙️ Tarama Ayarlari")
@@ -2175,3 +2476,10 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
         st.info("Su anda gorunur hata yok.")
 
     st.caption("Ayrica sunucu klasorunde squarexpo_v3.log dosyasi olusur.")
+
+
+st.markdown("""
+<div class="footer-note">
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.0
+</div>
+""", unsafe_allow_html=True)
