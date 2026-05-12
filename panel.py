@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V1.3"
+APP_TITLE = "Fuar Müşteri Otomasyonu V1.4"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -332,7 +332,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.3</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V1.4</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -405,6 +405,13 @@ if "son_islem_ozeti" not in st.session_state:
 
 if "website_cache" not in st.session_state:
     st.session_state["website_cache"] = {}
+
+
+if "batch_index" not in st.session_state:
+    st.session_state["batch_index"] = 0
+
+if "son_batch_sonuclari" not in st.session_state:
+    st.session_state["son_batch_sonuclari"] = []
 
 
 
@@ -661,6 +668,26 @@ def arsivi_getir():
         df = pd.DataFrame()
     conn.close()
     return df
+
+
+
+def islenmis_firmalari_getir(fuar_etiketi):
+    """
+    Aynı fuar etiketi için daha önce arşive kaydedilmiş firmaları döndürür.
+    Böylece sistem kapanırsa kaldığı yerden devam edebilir.
+    """
+    conn = db_baglan()
+    try:
+        df = pd.read_sql_query(
+            "SELECT DISTINCT firma_adi FROM sonuclar WHERE fuar_etiketi = ?",
+            conn,
+            params=(fuar_etiketi,)
+        )
+        firmalar = set(df["firma_adi"].dropna().astype(str).str.lower().str.strip().tolist())
+    except Exception:
+        firmalar = set()
+    conn.close()
+    return firmalar
 
 
 def arsivi_temizle():
@@ -3119,6 +3146,22 @@ with st.sidebar:
     listeyi_sifirla = st.checkbox("Yeni veri eklenince mevcut havuzu sifirla", value=True)
 
     st.divider()
+    st.subheader("📦 Paketli Tarama")
+
+    paket_boyutu = st.selectbox(
+        "Bir seferde işlenecek firma sayısı",
+        [25, 50, 100, 150],
+        index=1,
+        help="Streamlit Cloud için 25 veya 50 daha güvenlidir. Büyük listelerde uygulamanın kapanmasını önler."
+    )
+
+    sadece_islenmemis = st.checkbox(
+        "Daha önce işlenen firmaları atla",
+        value=True,
+        help="Aynı fuar etiketiyle daha önce arşive kaydedilen firmalar tekrar taranmaz."
+    )
+
+    st.divider()
 
     if st.button("🧹 Islem Havuzunu Temizle", use_container_width=True):
         st.session_state["ana_liste"] = []
@@ -3310,11 +3353,25 @@ if st.session_state["ana_liste"]:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    tara = st.button("⚡ FIRMALARI TARA VE ARSIVE KAYDET", use_container_width=True)
+    tara = st.button("⚡ BU PAKETİ TARA VE ARŞİVE KAYDET", use_container_width=True)
 
     if tara:
-        firmalar = st.session_state["ana_liste"]
-        toplam_firma = len(firmalar)
+        tum_firmalar = st.session_state["ana_liste"]
+
+        if sadece_islenmemis:
+            islenmisler = islenmis_firmalari_getir(fuar_etiketi)
+            firmalar_filtreli = [f for f in tum_firmalar if f.lower().strip() not in islenmisler]
+        else:
+            firmalar_filtreli = tum_firmalar
+
+        toplam_kalan = len(firmalar_filtreli)
+
+        if toplam_kalan == 0:
+            st.success("✅ Bu fuar etiketi için işlem bekleyen firma kalmadı.")
+            st.stop()
+
+        paket_firmalar = firmalar_filtreli[:paket_boyutu]
+        toplam_firma = len(paket_firmalar)
         baslangic_tarama = time.time()
 
         progress_bar = st.progress(0)
@@ -3327,13 +3384,15 @@ if st.session_state["ana_liste"]:
         web_bulunamadi = 0
         hata_sayisi = 0
 
-        status_area.info(f"🚀 {SCAN_MODE} başladı. Aynı anda {max_workers} firma taranıyor.")
+        status_area.info(
+            f"🚀 {SCAN_MODE} başladı. Bu pakette {toplam_firma} firma işlenecek. "
+            f"Toplam bekleyen: {toplam_kalan}. Paralel işlem: {max_workers}."
+        )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(derin_bilgi_bul, firma): firma for firma in firmalar}
+            futures = {executor.submit(derin_bilgi_bul, firma): firma for firma in paket_firmalar}
             pending = set(futures.keys())
             tamamlanan_sayi = 0
-            son_ekran_guncelleme = 0
 
             while pending:
                 done, pending = concurrent.futures.wait(
@@ -3342,20 +3401,19 @@ if st.session_state["ana_liste"]:
                     return_when=concurrent.futures.FIRST_COMPLETED
                 )
 
-                # Henüz tamamlanan yoksa bile ekranda canlı süre akmaya devam etsin
                 if not done:
                     gecen = time.time() - baslangic_tarama
                     metrik_area.markdown(
                         f"""
                         **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
-                        **Paralel işlem:** {max_workers} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Paket:** {toplam_firma} firma &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Tamamlanan:** {tamamlanan_sayi}/{toplam_firma} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Bekleyen:** {len(pending)} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Geçen:** {sure_formatla(gecen)}
                         """
                     )
                     status_area.info(
-                        f"🔎 Arka planda {max_workers} firma aynı anda taranıyor. İlk sonuç bekleniyor..."
+                        f"🔎 Arka planda {max_workers} firma aynı anda taranıyor. Sonuçlar geldikçe ara kayıt yapılacak..."
                     )
                     continue
 
@@ -3379,6 +3437,11 @@ if st.session_state["ana_liste"]:
                     res["fuar_etiketi"] = fuar_etiketi
                     kayitlar.append(res)
 
+                    try:
+                        verileri_toplu_kaydet([res])
+                    except Exception as e:
+                        hata_kaydet(f"Ara kayıt hatası: {str(e)}")
+
                     if res.get("durum") == "Tamamlandi":
                         basarili += 1
                     elif "bulunamadi" in res.get("durum", "").lower():
@@ -3399,7 +3462,8 @@ if st.session_state["ana_liste"]:
                     metrik_area.markdown(
                         f"""
                         **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
-                        **Paralel işlem:** {max_workers} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Bu paket:** {tamamlanan_sayi}/{toplam_firma} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Toplam bekleyen:** {toplam_kalan} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Başarılı:** {basarili} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Web bulunamadı:** {web_bulunamadi} &nbsp;&nbsp; | &nbsp;&nbsp;
                         **Hata:** {hata_sayisi} &nbsp;&nbsp; | &nbsp;&nbsp;
@@ -3411,19 +3475,31 @@ if st.session_state["ana_liste"]:
                     if len(kayitlar) % 5 == 0 or tamamlanan_sayi == toplam_firma:
                         sonuc_placeholder.dataframe(pd.DataFrame(kayitlar), use_container_width=True)
 
-        verileri_toplu_kaydet(kayitlar)
+        st.session_state["son_batch_sonuclari"] = kayitlar
+        kalan_sonraki = max(toplam_kalan - toplam_firma, 0)
 
         st.session_state["son_islem_ozeti"] = (
-            f"Tamamlandi. Toplam: {len(kayitlar)} | "
-            f"Basarili: {basarili} | "
-            f"Web bulunamadi: {web_bulunamadi} | "
-            f"Hata: {hata_sayisi}"
+            f"Paket tamamlandı. Bu paket: {len(kayitlar)} | "
+            f"Başarılı: {basarili} | "
+            f"Web bulunamadı: {web_bulunamadi} | "
+            f"Hata: {hata_sayisi} | "
+            f"Kalan: {kalan_sonraki}"
         )
 
-        st.success("✅ Islem tamamlandi ve arsive kaydedildi.")
+        st.success("✅ Paket tamamlandı ve sonuçlar arşive ara kayıt olarak işlendi.")
         st.info(st.session_state["son_islem_ozeti"])
 
-        st.session_state["ana_liste"] = []
+        islenen_set = set([f.lower().strip() for f in paket_firmalar])
+        st.session_state["ana_liste"] = [
+            f for f in st.session_state["ana_liste"]
+            if f.lower().strip() not in islenen_set
+        ]
+
+        if kalan_sonraki > 0:
+            st.warning(f"📦 Bu paket bitti. Kalan yaklaşık {kalan_sonraki} firma var. Devam etmek için tekrar 'BU PAKETİ TARA VE ARŞİVE KAYDET' butonuna bas.")
+        else:
+            st.success("🎉 Tüm firmalar tamamlandı.")
+
         st.rerun()
 
 else:
@@ -3494,6 +3570,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.3
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V1.4
 </div>
 """, unsafe_allow_html=True)
