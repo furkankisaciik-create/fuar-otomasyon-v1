@@ -506,6 +506,18 @@ def url_firma_sonuclarini_temizle(adaylar):
             seen.add(key)
             final.append(x)
 
+    if progress_callback:
+        try:
+            progress_callback({
+                "adim": "Katılımcı çekimi tamamlandı.",
+                "sayfa_no": 0,
+                "toplam_sayfa": 0,
+                "bulunan": len(final),
+                "gecen": time.time() - baslangic_zamani
+            })
+        except Exception:
+            pass
+
     return final
 
 
@@ -581,7 +593,7 @@ def firma_listesi_filtrele(adaylar):
 
 
 
-def musiad_katilimci_listesi_cek(url):
+def musiad_katilimci_listesi_cek(url, progress_callback=None):
     """
     MÜSİAD Expo özel motoru V4.1.
     Ana düzeltme:
@@ -595,6 +607,21 @@ def musiad_katilimci_listesi_cek(url):
 
     url = normalize_url(url)
     tum_firmalar = []
+    baslangic_zamani = time.time()
+
+    def durum_bildir(adim, sayfa_no=0, toplam_sayfa=0):
+        if progress_callback:
+            try:
+                gecen = time.time() - baslangic_zamani
+                progress_callback({
+                    "adim": adim,
+                    "sayfa_no": sayfa_no,
+                    "toplam_sayfa": toplam_sayfa,
+                    "bulunan": len(set([x.lower().strip() for x in tum_firmalar])),
+                    "gecen": gecen
+                })
+            except Exception:
+                pass
 
     def firma_ekle(firma):
         firma = firma_adi_temizle(firma)
@@ -744,6 +771,7 @@ def musiad_katilimci_listesi_cek(url):
         except Exception:
             return False
 
+    durum_bildir("Tarayıcı başlatılıyor...")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -761,6 +789,7 @@ def musiad_katilimci_listesi_cek(url):
             locale="tr-TR"
         )
 
+        durum_bildir("Sayfa açılıyor ve katılımcı tablosu bekleniyor...")
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(8000)
 
@@ -785,6 +814,7 @@ def musiad_katilimci_listesi_cek(url):
         onceki_toplam = -1
 
         for sayfa_no in range(1, toplam_sayfa + 1):
+            durum_bildir(f"Sayfa {sayfa_no}/{toplam_sayfa} okunuyor...", sayfa_no, toplam_sayfa)
             page.wait_for_timeout(1500)
 
             # Her sayfada önce en üste çek
@@ -803,6 +833,7 @@ def musiad_katilimci_listesi_cek(url):
                 pass
 
             # Görünenleri oku + scroll et + tekrar oku
+            durum_bildir(f"Sayfa {sayfa_no}/{toplam_sayfa}: tablo satırları toplanıyor...", sayfa_no, toplam_sayfa)
             stabil = 0
             son_count = len(tum_firmalar)
 
@@ -822,6 +853,8 @@ def musiad_katilimci_listesi_cek(url):
                 if stabil >= 4 and not changed:
                     break
 
+            durum_bildir(f"Sayfa {sayfa_no}/{toplam_sayfa} tamamlandı.", sayfa_no, toplam_sayfa)
+
             # Sonraki sayfaya geç
             if sayfa_no >= toplam_sayfa:
                 break
@@ -832,6 +865,7 @@ def musiad_katilimci_listesi_cek(url):
             except Exception:
                 pass
 
+            durum_bildir(f"Sayfa {sayfa_no + 1}/{toplam_sayfa} için Sonraki butonuna basılıyor...", sayfa_no, toplam_sayfa)
             clicked = sonraki_butonuna_bas(page)
 
             if not clicked:
@@ -947,6 +981,7 @@ def firmalari_url_den_cek_playwright(url):
     url = normalize_url(url)
     adaylar = []
 
+    durum_bildir("Tarayıcı başlatılıyor...")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -1298,6 +1333,19 @@ def listeye_ekle(yeni_firmalar, listeyi_sifirla=False):
     return len(yeni_firmalar)
 
 
+
+def sure_formatla(saniye):
+    try:
+        saniye = int(saniye)
+        dk = saniye // 60
+        sn = saniye % 60
+        if dk <= 0:
+            return f"{sn} sn"
+        return f"{dk} dk {sn} sn"
+    except Exception:
+        return "-"
+
+
 # ============================================================
 # ARAYUZ
 # ============================================================
@@ -1360,22 +1408,59 @@ with t1:
             st.warning("Lutfen bir URL gir.")
         else:
             try:
+                progress_bar = st.progress(0)
+                durum_kutusu = st.empty()
+                metrik_alani = st.empty()
+                baslangic = time.time()
+
+                def progress_guncelle(info):
+                    adim = info.get("adim", "İşlem sürüyor...")
+                    sayfa_no = info.get("sayfa_no", 0)
+                    toplam_sayfa = info.get("toplam_sayfa", 0)
+                    bulunan = info.get("bulunan", 0)
+                    gecen = info.get("gecen", time.time() - baslangic)
+
+                    oran = 0.05
+                    kalan_text = "Hesaplanıyor..."
+
+                    if toplam_sayfa and sayfa_no:
+                        oran = min(max(sayfa_no / toplam_sayfa, 0.05), 0.98)
+                        if sayfa_no > 0:
+                            tahmini_toplam = gecen / sayfa_no * toplam_sayfa
+                            kalan = max(tahmini_toplam - gecen, 0)
+                            kalan_text = sure_formatla(kalan)
+
+                    progress_bar.progress(oran)
+                    durum_kutusu.info(f"🔄 {adim}")
+
+                    metrik_alani.markdown(
+                        f"""
+                        **Bulunan firma:** {bulunan} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Geçen süre:** {sure_formatla(gecen)} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Tahmini kalan:** {kalan_text}
+                        """
+                    )
+
                 with st.spinner("URL okunuyor ve firma isimleri cikariliyor..."):
                     firmalar = []
 
                     # MÜSİAD özel tablo motoru: tüm sayfaları dolaşır ve Katılımcı sütununu alır
                     if "musiadexpo.com" in url_input.lower():
                         st.info("MÜSİAD özel katılımcı motoru çalışıyor. Tüm sayfalar dolaşılıyor...")
-                        firmalar = musiad_katilimci_listesi_cek(url_input)
+                        firmalar = musiad_katilimci_listesi_cek(url_input, progress_callback=progress_guncelle)
 
                     # Genel motorlar
                     if not firmalar:
+                        progress_guncelle({"adim": "Genel statik HTML motoru deneniyor...", "bulunan": 0, "gecen": time.time() - baslangic})
                         firmalar = firmalari_url_den_cek(url_input)
 
                     if not firmalar:
                         st.warning("Statik HTML icinde firma bulunamadi. JavaScript tarayici motoru deneniyor...")
+                        progress_guncelle({"adim": "JavaScript tarayıcı motoru deneniyor...", "bulunan": 0, "gecen": time.time() - baslangic})
                         firmalar = firmalari_url_den_cek_playwright(url_input)
 
+                    progress_bar.progress(1.0)
+                    durum_kutusu.success("✅ URL tarama tamamlandı.")
                     adet = listeye_ekle(firmalar, listeyi_sifirla=listeyi_sifirla)
 
                 if adet > 0:
