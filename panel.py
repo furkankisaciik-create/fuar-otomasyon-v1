@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.0"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.1"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.0
+            Fuar Müşteri Otomasyonu V2.1
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.0</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.1</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -3079,7 +3079,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.0
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.1
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -3609,7 +3609,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.0.
+    PDF firma çıkarma motoru V2.1.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -3656,7 +3656,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.0.
+    Excel firma çıkarma motoru V2.1.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -3715,6 +3715,53 @@ def listeye_ekle(yeni_firmalar, listeyi_sifirla=False):
         st.session_state["ana_liste"] = kaynak_firmalarini_normalize_et(birlesik)
 
     return len(yeni_firmalar)
+
+
+
+def tarama_modu_ayarlari(mod):
+    """
+    Tarama modu ayarları.
+    Hızlı: daha seri, daha az sorgu.
+    Dengeli: güvenli ve hızlı varsayılan mod.
+    Derin: daha yavaş ama eksik kalan firmalarda daha fazla arama.
+    """
+    if mod == "Hızlı Tarama":
+        return {
+            "workers": 6,
+            "query_limit": 2,
+            "playwright_fallback": False,
+            "aciklama": "Hızlı mod: En seri mod. Firma başına az sorgu dener, tarayıcı fallback kapalıdır."
+        }
+
+    if mod == "Derin Tarama":
+        return {
+            "workers": 1,
+            "query_limit": 8,
+            "playwright_fallback": True,
+            "aciklama": "Derin mod: Eksik kalan firmalar için kullanılır. Yavaş ama daha güçlüdür."
+        }
+
+    return {
+        "workers": 4,
+        "query_limit": 4,
+        "playwright_fallback": False,
+        "aciklama": "Dengeli mod: Çökmeden hızlı çalışması için güvenli ayar. Tarayıcı fallback kapalıdır."
+    }
+
+
+def sure_formatla(saniye):
+    """
+    Saniyeyi okunabilir süreye çevirir.
+    """
+    try:
+        saniye = int(saniye)
+        dk = saniye // 60
+        sn = saniye % 60
+        if dk <= 0:
+            return f"{sn} sn"
+        return f"{dk} dk {sn} sn"
+    except Exception:
+        return "-"
 
 
 # ============================================================
@@ -4200,6 +4247,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.0
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.1
 </div>
 """, unsafe_allow_html=True)
