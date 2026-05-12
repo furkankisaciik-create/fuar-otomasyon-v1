@@ -338,12 +338,16 @@ def firma_gibi_gorunuyor_mu(item):
     # Net menü / adres / sayfa / zaman kelimeleri
     red_flags = [
         "mah.", "mahalle", "cad.", "cadde", "sok.", "sokak", "no:", "istanbul", "bakırköy",
-        "foto galeri", "genel bakış", "gizlilik", "hazır stant", "medya", "materyal",
+        "foto galeri", "genel bakış", "genel bakis", "gizlilik", "hazır stant", "hazir stant",
+        "medya", "materyal", "medya materyalleri", "medya partnerleri",
         "ziyaretçi", "ziyaretci", "katılımcı", "katilimci", "başvuru", "basvuru",
         "saniye", "dakika", "gün", "gun", "saat", "sonuç", "sonuc",
         "musiad", "müsiad", "fuar", "expo", "web sitesi", "web site",
         "kvkk", "politika", "form", "bilet", "ulaşım", "ulasim",
-        "program", "etkinlik", "salon", "harita", "iletişim", "iletisim"
+        "program", "etkinlik", "salon", "harita", "iletişim", "iletisim",
+        "dijital teknolojiler", "enerji ve çevre", "enerji ve cevre",
+        "gıda, tarım ve hayvancılık", "gida, tarim ve hayvancilik",
+        "sektör", "sektor", "kategori", "ürün grubu", "urun grubu"
     ]
 
     if any(x in low for x in red_flags):
@@ -360,12 +364,10 @@ def firma_gibi_gorunuyor_mu(item):
 
     # Sirket unvani isaretleri
     company_markers = [
-        " a.ş", " a.s", " aş", " as ", " anonim", " san ", " tic ", " ltd", " şti",
-        " sti", " limited", " şirket", " sirket", " co.", " co ", " inc", " llc",
-        " gmbh", " group", " holding", " endüstri", " endustri", " makina",
-        " tekstil", " gida", " gıda", " plastik", " metal", " inşaat", " insaat",
-        " otomotiv", " medikal", " teknoloji", " elektronik", " mobilya",
-        " ambalaj", " kimya", " enerji", " lojistik", " kozmetik"
+        " a.ş", " a.s", " aş", " as ", " anonim", " san ", " sanayi",
+        " tic ", " ticaret", " ltd", " ltd.", " şti", " şti.", " sti", " sti.",
+        " limited", " şirket", " sirket", " co.", " co ", " inc", " llc",
+        " gmbh", " group", " holding", " corporation", " corp"
     ]
 
     if any(m in f" {low} " for m in company_markers):
@@ -398,7 +400,12 @@ def firma_listesi_filtrele(adaylar):
         "saniye", "dakika", "gün", "gun", "saat", "2024", "2025", "2026",
         "musiad", "müsiad", "musiad expo", "müsiad expo", "arama",
         "filtre", "tüm", "tum", "liste", "listesi", "loading", "yükleniyor",
-        "yukleniyor", "devam", "geri", "ileri", "previous", "next"
+        "yukleniyor", "devam", "geri", "ileri", "previous", "next",
+        "foto galeri", "genel bakış", "genel bakis", "gizlilik politikası",
+        "gizlilik politikasi", "hazır stantlar", "hazir stantlar",
+        "medya materyalleri", "medya partnerleri",
+        "dijital teknolojiler", "enerji ve çevre", "enerji ve cevre",
+        "gıda, tarım ve hayvancılık", "gida, tarim ve hayvancilik"
     ]
 
     temiz_liste = []
@@ -509,7 +516,8 @@ def firmalari_url_den_cek(url):
         if firma_gibi_gorunuyor_mu(temiz):
             adaylar.append(temiz)
 
-    return firma_listesi_filtrele(adaylar)
+    temizler = firma_listesi_filtrele(adaylar)
+    return [x for x in temizler if firma_gibi_gorunuyor_mu(x)]
 
 
 def firmalari_url_den_cek_playwright(url):
@@ -582,7 +590,8 @@ def firmalari_url_den_cek_playwright(url):
         if firma_gibi_gorunuyor_mu(temiz):
             adaylar.append(temiz)
 
-    return firma_listesi_filtrele(adaylar)
+    temizler = firma_listesi_filtrele(adaylar)
+    return [x for x in temizler if firma_gibi_gorunuyor_mu(x)]
 
 
 # ============================================================
