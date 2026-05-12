@@ -59,7 +59,7 @@ except Exception:
 APP_TITLE = "SQUAREXPO Fuar Musteri Otomasyonu V3.2"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 10
 
 # Tarama modu ayarlari runtime'da sidebar'dan guncellenir
 SCAN_MODE = "Dengeli"
@@ -1730,24 +1730,24 @@ def tarama_modu_ayarlari(mod):
     if mod == "Hızlı Tarama":
         return {
             "workers": 6,
-            "query_limit": 3,
+            "query_limit": 2,
             "playwright_fallback": False,
-            "aciklama": "Hızlı mod: Web sitesi bulmaya odaklanır, daha az sorgu dener."
+            "aciklama": "Hızlı mod: En seri mod. Firma başına az sorgu dener, tarayıcı fallback kapalıdır."
         }
 
     if mod == "Derin Tarama":
         return {
-            "workers": 2,
-            "query_limit": 10,
+            "workers": 1,
+            "query_limit": 8,
             "playwright_fallback": True,
-            "aciklama": "Derin mod: Daha yavaş ama eksik kalan firmalar için daha güçlü arama yapar."
+            "aciklama": "Derin mod: Eksik kalan firmalar için kullanılır. Yavaş ama daha güçlüdür."
         }
 
     return {
         "workers": 4,
-        "query_limit": 6,
-        "playwright_fallback": True,
-        "aciklama": "Dengeli mod: Hız ve doğruluk arasında güvenli ayar."
+        "query_limit": 4,
+        "playwright_fallback": False,
+        "aciklama": "Dengeli mod: Çökmeden hızlı çalışması için güvenli ayar. Tarayıcı fallback kapalıdır."
     }
 
 
@@ -2016,56 +2016,85 @@ if st.session_state["ana_liste"]:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(derin_bilgi_bul, firma): firma for firma in firmalar}
+            pending = set(futures.keys())
+            tamamlanan_sayi = 0
+            son_ekran_guncelleme = 0
 
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                firma = futures[future]
-
-                try:
-                    res = future.result()
-                except Exception as e:
-                    res = {
-                        "firma_adi": firma,
-                        "web_adresi": "Bulunamadi",
-                        "telefon": "Bulunamadi",
-                        "eposta": "Bulunamadi",
-                        "kaynak": "",
-                        "durum": "Hata",
-                        "hata": str(e)
-                    }
-
-                res["fuar_etiketi"] = fuar_etiketi
-                kayitlar.append(res)
-
-                if res.get("durum") == "Tamamlandi":
-                    basarili += 1
-                elif "bulunamadi" in res.get("durum", "").lower():
-                    web_bulunamadi += 1
-                elif res.get("durum") == "Hata":
-                    hata_sayisi += 1
-
-                tamamlanan = i + 1
-                oran = tamamlanan / toplam_firma
-                gecen = time.time() - baslangic_tarama
-                tahmini_toplam = gecen / tamamlanan * toplam_firma if tamamlanan else 0
-                kalan = max(tahmini_toplam - gecen, 0)
-
-                progress_bar.progress(oran)
-                status_area.info(f"İşleniyor: {tamamlanan}/{toplam_firma} | Son firma: {firma}")
-
-                metrik_area.markdown(
-                    f"""
-                    **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
-                    **Paralel işlem:** {max_workers} &nbsp;&nbsp; | &nbsp;&nbsp;
-                    **Başarılı:** {basarili} &nbsp;&nbsp; | &nbsp;&nbsp;
-                    **Web bulunamadı:** {web_bulunamadi} &nbsp;&nbsp; | &nbsp;&nbsp;
-                    **Hata:** {hata_sayisi} &nbsp;&nbsp; | &nbsp;&nbsp;
-                    **Geçen:** {sure_formatla(gecen)} &nbsp;&nbsp; | &nbsp;&nbsp;
-                    **Tahmini kalan:** {sure_formatla(kalan)}
-                    """
+            while pending:
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=1,
+                    return_when=concurrent.futures.FIRST_COMPLETED
                 )
 
-                if len(kayitlar) % 5 == 0 or i == toplam_firma - 1:
-                    sonuc_placeholder.dataframe(pd.DataFrame(kayitlar), use_container_width=True)
+                # Henüz tamamlanan yoksa bile ekranda canlı süre akmaya devam etsin
+                if not done:
+                    gecen = time.time() - baslangic_tarama
+                    metrik_area.markdown(
+                        f"""
+                        **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Paralel işlem:** {max_workers} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Tamamlanan:** {tamamlanan_sayi}/{toplam_firma} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Bekleyen:** {len(pending)} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Geçen:** {sure_formatla(gecen)}
+                        """
+                    )
+                    status_area.info(
+                        f"🔎 Arka planda {max_workers} firma aynı anda taranıyor. İlk sonuç bekleniyor..."
+                    )
+                    continue
+
+                for future in done:
+                    firma = futures[future]
+                    tamamlanan_sayi += 1
+
+                    try:
+                        res = future.result()
+                    except Exception as e:
+                        res = {
+                            "firma_adi": firma,
+                            "web_adresi": "Bulunamadi",
+                            "telefon": "Bulunamadi",
+                            "eposta": "Bulunamadi",
+                            "kaynak": "",
+                            "durum": "Hata",
+                            "hata": str(e)
+                        }
+
+                    res["fuar_etiketi"] = fuar_etiketi
+                    kayitlar.append(res)
+
+                    if res.get("durum") == "Tamamlandi":
+                        basarili += 1
+                    elif "bulunamadi" in res.get("durum", "").lower():
+                        web_bulunamadi += 1
+                    elif res.get("durum") == "Hata":
+                        hata_sayisi += 1
+
+                    oran = tamamlanan_sayi / toplam_firma
+                    gecen = time.time() - baslangic_tarama
+                    tahmini_toplam = gecen / tamamlanan_sayi * toplam_firma if tamamlanan_sayi else 0
+                    kalan = max(tahmini_toplam - gecen, 0)
+
+                    progress_bar.progress(oran)
+                    status_area.info(
+                        f"İşleniyor: {tamamlanan_sayi}/{toplam_firma} | Son tamamlanan firma: {firma}"
+                    )
+
+                    metrik_area.markdown(
+                        f"""
+                        **Mod:** {SCAN_MODE} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Paralel işlem:** {max_workers} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Başarılı:** {basarili} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Web bulunamadı:** {web_bulunamadi} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Hata:** {hata_sayisi} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Geçen:** {sure_formatla(gecen)} &nbsp;&nbsp; | &nbsp;&nbsp;
+                        **Tahmini kalan:** {sure_formatla(kalan)}
+                        """
+                    )
+
+                    if len(kayitlar) % 5 == 0 or tamamlanan_sayi == toplam_firma:
+                        sonuc_placeholder.dataframe(pd.DataFrame(kayitlar), use_container_width=True)
 
         verileri_toplu_kaydet(kayitlar)
 
