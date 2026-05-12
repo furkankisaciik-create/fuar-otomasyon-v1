@@ -583,10 +583,12 @@ def firma_listesi_filtrele(adaylar):
 
 def musiad_katilimci_listesi_cek(url):
     """
-    MÜSİAD Expo özel motoru V4.0.
-    - Tablo içi scroll alanını aşağı kaydırarak o sayfadaki tüm görünen/virtual satırları toplar.
-    - Sonraki butonuna basarak tüm sayfaları dolaşır.
-    - Katılımcı sütunundaki ilk hücreyi firma adı olarak alır.
+    MÜSİAD Expo özel motoru V4.1.
+    Ana düzeltme:
+    - Tailwind class içinde geçen disabled:opacity gibi ifadeler gerçek disabled sanılmıyor.
+    - Sonraki butonu gerçek disabled değilse tıklanır.
+    - Her sayfada tablo/scroll alanı agresif şekilde aşağı kaydırılır.
+    - Katılımcı sütunundaki firma adı alınır.
     """
     if not PLAYWRIGHT_AKTIF:
         raise Exception("Playwright aktif değil. MÜSİAD özel motoru çalışamaz.")
@@ -604,8 +606,8 @@ def musiad_katilimci_listesi_cek(url):
         low = firma.lower()
         yasak = [
             "katılımcı", "katilimci", "sektör", "sektor", "şehir", "sehir",
-            "foto galeri", "genel bakış", "gizlilik", "medya", "musiad", "müsiad",
-            "sonraki", "önceki", "onceki"
+            "foto galeri", "genel bakış", "genel bakis", "gizlilik", "medya",
+            "musiad", "müsiad", "sonraki", "önceki", "onceki"
         ]
 
         if len(firma) < 3 or len(firma) > 120:
@@ -616,6 +618,131 @@ def musiad_katilimci_listesi_cek(url):
             return
 
         tum_firmalar.append(firma)
+
+    def gorunen_tablo_satirlarini_oku(page):
+        try:
+            rows = page.locator("table tbody tr")
+            row_count = rows.count()
+
+            for i in range(row_count):
+                try:
+                    cells = rows.nth(i).locator("td")
+                    if cells.count() == 0:
+                        continue
+
+                    firma = cells.nth(0).inner_text(timeout=2000)
+                    firma_ekle(firma)
+
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def tum_scroll_alanlarini_kaydir(page):
+        """
+        Sayfadaki tüm scroll edilebilir alanları aşağı kaydırır.
+        Virtual table varsa yeni satırların DOM'a gelmesini sağlar.
+        """
+        try:
+            return page.evaluate("""
+                () => {
+                    let changed = false;
+                    const all = Array.from(document.querySelectorAll('*'));
+
+                    for (const el of all) {
+                        try {
+                            const canScrollY = el.scrollHeight > el.clientHeight + 10;
+                            if (!canScrollY) continue;
+
+                            const before = el.scrollTop;
+                            el.scrollTop = el.scrollTop + Math.max(250, Math.floor(el.clientHeight * 0.85));
+
+                            if (el.scrollTop !== before) changed = true;
+                        } catch(e) {}
+                    }
+
+                    window.scrollBy(0, 500);
+                    return changed;
+                }
+            """)
+        except Exception:
+            return False
+
+    def sonraki_butonuna_bas(page):
+        """
+        Sonraki butonuna basar.
+        ÖNEMLİ: class içinde 'disabled:' geçmesi gerçek disabled değildir.
+        Sadece disabled attribute veya aria-disabled=true gerçek disabled kabul edilir.
+        """
+        try:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(700)
+
+            clicked = page.evaluate("""
+                () => {
+                    const els = Array.from(document.querySelectorAll('button, a'));
+                    const candidates = els.filter(el => {
+                        const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        return txt.includes('sonraki') || txt.includes('next');
+                    });
+
+                    if (!candidates.length) return false;
+
+                    const btn = candidates[candidates.length - 1];
+
+                    const realDisabled =
+                        btn.disabled === true ||
+                        btn.getAttribute('disabled') !== null ||
+                        btn.getAttribute('aria-disabled') === 'true';
+
+                    if (realDisabled) return false;
+
+                    btn.scrollIntoView({block: 'center', inline: 'center'});
+                    btn.click();
+                    return true;
+                }
+            """)
+
+            if clicked:
+                return True
+
+            # Playwright fallback
+            selectors = [
+                "button:has-text('Sonraki')",
+                "a:has-text('Sonraki')",
+                "button:has-text('Next')",
+                "a:has-text('Next')"
+            ]
+
+            for sel in selectors:
+                try:
+                    locs = page.locator(sel)
+                    count = locs.count()
+
+                    if count > 0:
+                        btn = locs.nth(count - 1)
+
+                        if not btn.is_visible():
+                            continue
+
+                        disabled_attr = btn.get_attribute("disabled")
+                        aria_disabled = btn.get_attribute("aria-disabled")
+
+                        if disabled_attr is not None or aria_disabled == "true":
+                            return False
+
+                        btn.scroll_into_view_if_needed(timeout=3000)
+                        page.wait_for_timeout(500)
+                        btn.click(timeout=5000)
+                        return True
+
+                except Exception:
+                    continue
+
+            return False
+
+        except Exception:
+            return False
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -637,7 +764,6 @@ def musiad_katilimci_listesi_cek(url):
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(8000)
 
-        # Tablo bekle
         for _ in range(25):
             try:
                 if page.locator("table tbody tr").count() > 0:
@@ -646,207 +772,99 @@ def musiad_katilimci_listesi_cek(url):
                 pass
             page.wait_for_timeout(1000)
 
-        max_sayfa = 50
-        sayfa_no = 0
-        son_sayfa_imza = ""
+        # Sayfa sayısını gövdeden tahmin et: "Sayfa 1 / 14"
+        toplam_sayfa = 20
+        try:
+            body_text = page.inner_text("body")
+            m = re.search(r"Sayfa\s+\d+\s*/\s*(\d+)", body_text, flags=re.IGNORECASE)
+            if m:
+                toplam_sayfa = int(m.group(1))
+        except Exception:
+            pass
 
-        while sayfa_no < max_sayfa:
-            sayfa_no += 1
+        onceki_toplam = -1
+
+        for sayfa_no in range(1, toplam_sayfa + 1):
             page.wait_for_timeout(1500)
 
-            # Her sayfada tablo içi scroll'u başa al
+            # Her sayfada önce en üste çek
             try:
                 page.evaluate("""
                     () => {
-                        const table = document.querySelector('table');
-                        if (!table) return;
-                        const candidates = [];
-                        let el = table.parentElement;
-                        while (el) {
-                            candidates.push(el);
-                            el = el.parentElement;
-                        }
-                        candidates.forEach(x => {
+                        const all = Array.from(document.querySelectorAll('*'));
+                        for (const el of all) {
                             try {
-                                if (x.scrollHeight > x.clientHeight) x.scrollTop = 0;
-                                if (x.scrollWidth > x.clientWidth) x.scrollLeft = 0;
+                                if (el.scrollHeight > el.clientHeight + 10) el.scrollTop = 0;
                             } catch(e) {}
-                        });
+                        }
                     }
                 """)
             except Exception:
                 pass
 
-            # Bu sayfadaki satırları tablo içi scroll ederek topla
-            onceki_imza = ""
-            stabil_sayac = 0
+            # Görünenleri oku + scroll et + tekrar oku
+            stabil = 0
+            son_count = len(tum_firmalar)
 
-            for scroll_step in range(30):
-                page.wait_for_timeout(600)
+            for _ in range(35):
+                gorunen_tablo_satirlarini_oku(page)
+                page.wait_for_timeout(500)
 
-                try:
-                    rows = page.locator("table tbody tr")
-                    row_count = rows.count()
-                    sayfa_firmalari = []
+                if len(tum_firmalar) == son_count:
+                    stabil += 1
+                else:
+                    stabil = 0
+                    son_count = len(tum_firmalar)
 
-                    for i in range(row_count):
-                        try:
-                            cells = rows.nth(i).locator("td")
-                            if cells.count() == 0:
-                                continue
+                changed = tum_scroll_alanlarini_kaydir(page)
+                page.wait_for_timeout(500)
 
-                            firma = cells.nth(0).inner_text(timeout=2000)
-                            firma = firma_adi_temizle(firma)
-
-                            if firma:
-                                sayfa_firmalari.append(firma)
-                                firma_ekle(firma)
-
-                        except Exception:
-                            continue
-
-                    mevcut_imza = "|".join(sayfa_firmalari)
-
-                    if mevcut_imza == onceki_imza:
-                        stabil_sayac += 1
-                    else:
-                        stabil_sayac = 0
-
-                    onceki_imza = mevcut_imza
-
-                    # Tablo içindeki scroll alanını aşağı indir
-                    scrolled = page.evaluate("""
-                        () => {
-                            const table = document.querySelector('table');
-                            if (!table) return false;
-
-                            let best = null;
-                            let el = table.parentElement;
-
-                            while (el) {
-                                try {
-                                    const canScrollY = el.scrollHeight > el.clientHeight + 5;
-                                    if (canScrollY) {
-                                        if (!best || el.scrollHeight > best.scrollHeight) best = el;
-                                    }
-                                } catch(e) {}
-                                el = el.parentElement;
-                            }
-
-                            if (!best) return false;
-
-                            const before = best.scrollTop;
-                            best.scrollTop = best.scrollTop + Math.floor(best.clientHeight * 0.85);
-                            return best.scrollTop !== before;
-                        }
-                    """)
-
-                    if not scrolled or stabil_sayac >= 3:
-                        break
-
-                except Exception:
+                if stabil >= 4 and not changed:
                     break
-
-            # Sayfa imzası: toplanan son 5 firma
-            current_unique = []
-            seen_tmp = set()
-            for f in tum_firmalar:
-                k = f.lower().strip()
-                if k not in seen_tmp:
-                    seen_tmp.add(k)
-                    current_unique.append(f)
-            sayfa_imza = "|".join(current_unique[-5:])
 
             # Sonraki sayfaya geç
-            try:
-                clicked = False
-
-                # Sayfa dibine in, pagination görünür olsun
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(800)
-
-                selectors = [
-                    "button:has-text('Sonraki')",
-                    "a:has-text('Sonraki')",
-                    "button:has-text('Next')",
-                    "a:has-text('Next')"
-                ]
-
-                for sel in selectors:
-                    try:
-                        locs = page.locator(sel)
-                        count = locs.count()
-                        if count > 0:
-                            btn = locs.nth(count - 1)
-                            if btn.is_visible():
-                                disabled_attr = btn.get_attribute("disabled")
-                                aria_disabled = btn.get_attribute("aria-disabled")
-                                class_attr = btn.get_attribute("class") or ""
-
-                                if disabled_attr is not None or aria_disabled == "true" or "disabled" in class_attr.lower():
-                                    clicked = False
-                                    break
-
-                                btn.scroll_into_view_if_needed(timeout=3000)
-                                page.wait_for_timeout(500)
-                                btn.click(timeout=5000)
-                                clicked = True
-                                break
-                    except Exception:
-                        continue
-
-                if not clicked:
-                    clicked = page.evaluate("""
-                        () => {
-                            const els = Array.from(document.querySelectorAll('button, a'));
-                            const btn = els.find(el => {
-                                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                                const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || (el.className || '').toString().toLowerCase().includes('disabled');
-                                return !disabled && (txt.includes('sonraki') || txt.includes('next'));
-                            });
-                            if (btn) {
-                                btn.scrollIntoView({block: 'center'});
-                                btn.click();
-                                return true;
-                            }
-                            return false;
-                        }
-                    """)
-
-                if not clicked:
-                    break
-
-                # Yeni sayfa değişti mi kontrol et
-                degisti = False
-                for _ in range(20):
-                    page.wait_for_timeout(1000)
-                    try:
-                        rows = page.locator("table tbody tr")
-                        if rows.count() > 0:
-                            first_txt = rows.nth(0).locator("td").nth(0).inner_text(timeout=1000)
-                            first_txt = firma_adi_temizle(first_txt)
-                            if first_txt and first_txt not in sayfa_imza and sayfa_imza != son_sayfa_imza:
-                                degisti = True
-                                break
-                    except Exception:
-                        pass
-
-                son_sayfa_imza = sayfa_imza
-
-                if not degisti:
-                    break
-
-            except Exception:
+            if sayfa_no >= toplam_sayfa:
                 break
+
+            before_first = ""
+            try:
+                before_first = page.locator("table tbody tr").nth(0).locator("td").nth(0).inner_text(timeout=1000)
+            except Exception:
+                pass
+
+            clicked = sonraki_butonuna_bas(page)
+
+            if not clicked:
+                break
+
+            # Sayfa değişimini bekle
+            changed_page = False
+            for _ in range(20):
+                page.wait_for_timeout(1000)
+                try:
+                    after_first = page.locator("table tbody tr").nth(0).locator("td").nth(0).inner_text(timeout=1000)
+                    if after_first and after_first != before_first:
+                        changed_page = True
+                        break
+                except Exception:
+                    pass
+
+            if not changed_page:
+                # Bazı sistemlerde ilk satır aynı kalabilir; toplam firma artışına göre devam edebiliriz.
+                if len(tum_firmalar) == onceki_toplam:
+                    break
+
+            onceki_toplam = len(tum_firmalar)
 
         browser.close()
 
-    # Mükerrerleri sil
     final = []
     seen = set()
+
     for f in tum_firmalar:
         f = firma_adi_temizle(f)
         key = f.lower().strip()
+
         if key and key not in seen:
             seen.add(key)
             final.append(f)
