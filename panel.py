@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.4"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.5"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.4
+            Fuar Müşteri Otomasyonu V2.5
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.4</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.5</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -763,6 +763,62 @@ def verileri_toplu_kaydet(kayitlar):
 
     conn.commit()
     conn.close()
+
+
+
+
+def arsiv_klasor_sil(fuar_etiketi, kuyruk_dahil=True):
+    """
+    Seçili araştırma klasörünü arşivden siler.
+    İstenirse aynı fuar etiketine ait işlem kuyruğunu da temizler.
+    """
+    conn = db_baglan()
+    try:
+        conn.execute("DELETE FROM sonuclar WHERE fuar_etiketi = ?", (fuar_etiketi,))
+        if kuyruk_dahil:
+            conn.execute("DELETE FROM islem_kuyrugu WHERE fuar_etiketi = ?", (fuar_etiketi,))
+        conn.commit()
+        ok = True
+    except Exception:
+        ok = False
+    conn.close()
+    return ok
+
+
+def arsiv_filtreli_kayitlari_sil(fuar_etiketi, firma_listesi):
+    """
+    Seçili klasörde filtrelenmiş tabloda görünen firma kayıtlarını siler.
+    """
+    firmalar = kaynak_firmalarini_normalize_et(firma_listesi)
+    if not firmalar:
+        return 0
+
+    conn = db_baglan()
+    c = conn.cursor()
+    silinen = 0
+
+    try:
+        for firma in firmalar:
+            c.execute(
+                "DELETE FROM sonuclar WHERE fuar_etiketi = ? AND firma_adi = ?",
+                (fuar_etiketi, firma)
+            )
+            silinen += c.rowcount
+
+            try:
+                c.execute(
+                    "DELETE FROM islem_kuyrugu WHERE fuar_etiketi = ? AND firma_adi = ?",
+                    (fuar_etiketi, firma)
+                )
+            except Exception:
+                pass
+
+        conn.commit()
+    except Exception:
+        pass
+
+    conn.close()
+    return silinen
 
 
 
@@ -3332,7 +3388,7 @@ def websitesinden_iletisim_bul(web_url):
 
 
 # ============================================================
-# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.4
+# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.5
 # ============================================================
 
 def guvenli_int(v, default=0):
@@ -3576,7 +3632,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.4
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.5
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -4106,7 +4162,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.4.
+    PDF firma çıkarma motoru V2.5.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -4153,7 +4209,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.4.
+    Excel firma çıkarma motoru V2.5.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -4856,6 +4912,45 @@ if not df_klasorler.empty:
             use_container_width=True
         )
 
+        st.markdown("### 🗑️ Arşiv Temizleme")
+
+        st.warning("Silme işlemleri kalıcıdır. Test kayıtlarını temizlemek için kullan.")
+
+        del_col1, del_col2 = st.columns(2)
+
+        with del_col1:
+            with st.expander("🗑️ Seçili araştırma klasörünü komple sil"):
+                st.caption("Bu işlem seçili fuar etiketine ait tüm arşiv kayıtlarını ve işlem kuyruğunu siler.")
+                onay_klasor = st.checkbox(
+                    f"'{secili_klasor}' klasörünü silmeyi onaylıyorum",
+                    key=f"delete_folder_confirm_{secili_klasor}"
+                )
+
+                if st.button("Klasörü Kalıcı Olarak Sil", use_container_width=True, disabled=not onay_klasor):
+                    ok = arsiv_klasor_sil(secili_klasor, kuyruk_dahil=True)
+                    if ok:
+                        st.success(f"'{secili_klasor}' araştırma klasörü silindi.")
+                        st.rerun()
+                    else:
+                        st.error("Klasör silinirken hata oluştu.")
+
+        with del_col2:
+            with st.expander("🧹 Şu an filtrede görünen kayıtları sil"):
+                st.caption("Örneğin sadece 'Düşük güven' filtresindekileri ya da 'Web bulunamayanlar' listesini temizleyebilirsin.")
+                filtre_sayisi = len(df_goster)
+                st.write(f"Şu an filtrede görünen kayıt sayısı: **{filtre_sayisi}**")
+
+                onay_filtre = st.checkbox(
+                    f"Filtrede görünen {filtre_sayisi} kaydı silmeyi onaylıyorum",
+                    key=f"delete_filtered_confirm_{secili_klasor}_{filtre}"
+                )
+
+                if st.button("Filtrede Görünenleri Sil", use_container_width=True, disabled=(not onay_filtre or filtre_sayisi == 0)):
+                    silinen = arsiv_filtreli_kayitlari_sil(secili_klasor, df_goster["firma_adi"].dropna().astype(str).tolist())
+                    st.success(f"{silinen} kayıt silindi.")
+                    st.rerun()
+
+
 else:
     st.info("Henüz arşiv klasörü oluşmadı. Bir araştırma çalıştırıp sonuçları kaydettiğinde burada görünecek.")
 
@@ -4877,6 +4972,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.4
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.5
 </div>
 """, unsafe_allow_html=True)
