@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.6"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.7"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.6
+            Fuar Müşteri Otomasyonu V2.7
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.6</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.7</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -981,6 +981,32 @@ def kuyruga_firma_ekle(fuar_etiketi, firmalar):
     conn.commit()
     conn.close()
     return eklendi
+
+
+
+def kuyruk_havuz_senkronize_et(fuar_etiketi, firmalar):
+    """
+    Mevcut işlem havuzunu kalıcı kuyrukla senkronize eder.
+    """
+    firmalar = kaynak_firmalarini_normalize_et(firmalar)
+    if not firmalar:
+        return {"toplam": 0, "yeni": 0, "kurtarilan": 0, "bekleyen": 0}
+
+    yeni = kuyruga_firma_ekle(fuar_etiketi, firmalar)
+
+    try:
+        kurtarilan = kuyruk_takilanlari_bekliyora_al(fuar_etiketi, dakika=0)
+    except Exception:
+        kurtarilan = 0
+
+    ozet = kuyruk_ozeti_getir(fuar_etiketi)
+    return {
+        "toplam": len(firmalar),
+        "yeni": yeni,
+        "kurtarilan": kurtarilan,
+        "bekleyen": ozet.get("Bekliyor", 0),
+    }
+
 
 
 def kuyruk_ozeti_getir(fuar_etiketi):
@@ -3423,7 +3449,7 @@ def websitesinden_iletisim_bul(web_url):
 
 
 # ============================================================
-# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.6
+# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.7
 # ============================================================
 
 def guvenli_int(v, default=0):
@@ -3667,7 +3693,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.6
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.7
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -4197,7 +4223,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.6.
+    PDF firma çıkarma motoru V2.7.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -4244,7 +4270,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.6.
+    Excel firma çıkarma motoru V2.7.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -4625,9 +4651,14 @@ try:
             st.rerun()
 
     with c_yansit:
-        if st.button("📌 Mevcut Havuzu Kuyruğa Kaydet", use_container_width=True):
-            adet_q = kuyruga_firma_ekle(fuar_etiketi, st.session_state.get("ana_liste", []))
-            st.success(f"{adet_q} yeni firma kalıcı kuyruğa eklendi.")
+        if st.button("📌 Havuzu Kuyrukla Senkronize Et", use_container_width=True):
+            sync = kuyruk_havuz_senkronize_et(fuar_etiketi, st.session_state.get("ana_liste", []))
+            st.success(
+                f"Havuz senkronize edildi. Havuz: {sync['toplam']} firma | "
+                f"Yeni eklenen: {sync['yeni']} | "
+                f"Takılıdan kurtarılan: {sync['kurtarilan']} | "
+                f"Kuyruk bekleyen: {sync['bekleyen']}"
+            )
             st.rerun()
 
     with c_sifirla:
@@ -4660,7 +4691,7 @@ if st.session_state["ana_liste"]:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    tara = st.button("⚡ BU PAKETİ TARA VE ARŞİVE KAYDET", use_container_width=True)
+    tara = st.button("⚡ KUYRUKTAN BU PAKETİ TARA VE ARŞİVE KAYDET", use_container_width=True)
 
     if tara or st.session_state.get("force_queue_run", False):
         st.session_state["force_queue_run"] = False
@@ -5024,6 +5055,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.6
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.7
 </div>
 """, unsafe_allow_html=True)
