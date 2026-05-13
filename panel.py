@@ -11,7 +11,7 @@ import time
 import io
 import random
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import concurrent.futures
 import pdfplumber
 from urllib.parse import urlparse, urljoin, quote_plus, parse_qs, unquote, urlencode, urlunparse, unquote, urlencode, urlunparse
@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.5"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.6"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.5
+            Fuar Müşteri Otomasyonu V2.6
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.5</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.6</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -484,6 +484,10 @@ if "batch_index" not in st.session_state:
 
 if "son_batch_sonuclari" not in st.session_state:
     st.session_state["son_batch_sonuclari"] = []
+
+
+if "force_queue_run" not in st.session_state:
+    st.session_state["force_queue_run"] = False
 
 
 
@@ -1078,6 +1082,37 @@ def kuyruk_sifirla(fuar_etiketi):
     except Exception:
         pass
     conn.close()
+
+
+
+def kuyruk_takilanlari_bekliyora_al(fuar_etiketi, dakika=5):
+    """
+    Uygulama kesilirse bazı işler 'İşleniyor' durumunda takılı kalabilir.
+    Bu fonksiyon belirli süreden eski İşleniyor kayıtlarını tekrar Bekliyor yapar.
+    """
+    conn = db_baglan()
+    c = conn.cursor()
+
+    try:
+        cutoff = (datetime.now() - timedelta(minutes=dakika)).strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("""
+            UPDATE islem_kuyrugu
+            SET durum = 'Bekliyor',
+                son_hata = 'Otomatik kurtarma: işlem yarıda kesildiği için tekrar kuyruğa alındı',
+                updated_at = ?
+            WHERE fuar_etiketi = ?
+              AND durum = 'İşleniyor'
+              AND (updated_at IS NULL OR updated_at < ?)
+        """, (now, fuar_etiketi, cutoff))
+        adet = c.rowcount
+        conn.commit()
+    except Exception:
+        adet = 0
+
+    conn.close()
+    return adet
+
 
 
 def kuyruk_bekleyenleri_havuza_yansit(fuar_etiketi):
@@ -3388,7 +3423,7 @@ def websitesinden_iletisim_bul(web_url):
 
 
 # ============================================================
-# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.5
+# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.6
 # ============================================================
 
 def guvenli_int(v, default=0):
@@ -3632,7 +3667,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.5
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.6
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -4162,7 +4197,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.5.
+    PDF firma çıkarma motoru V2.6.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -4209,7 +4244,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.5.
+    Excel firma çıkarma motoru V2.6.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -4574,11 +4609,19 @@ try:
     q3.metric("Kuyruk Tamamlandı", kuyruk_ozet.get("Tamamlandı", 0))
     q4.metric("Kuyruk Hata", kuyruk_ozet.get("Hata", 0))
 
-    c_devam, c_yansit, c_sifirla = st.columns([1, 1, 1])
+    c_devam, c_tarama, c_yansit, c_sifirla = st.columns([1, 1, 1, 1])
+
     with c_devam:
-        if st.button("🔁 Kaldığı Yerden Devam Et", use_container_width=True):
+        if st.button("🔁 Kaldığı Yerden Havuzu Güncelle", use_container_width=True):
+            kurtarilan = kuyruk_takilanlari_bekliyora_al(fuar_etiketi, dakika=2)
             adet_devam = kuyruk_bekleyenleri_havuza_yansit(fuar_etiketi)
-            st.success(f"{adet_devam} bekleyen firma işlem havuzuna yansıtıldı.")
+            st.success(f"{adet_devam} bekleyen firma işlem havuzuna yansıtıldı. {kurtarilan} takılı iş tekrar Bekliyor durumuna alındı.")
+            st.rerun()
+
+    with c_tarama:
+        if st.button("▶️ Kuyruktan Sonraki Paketi Tara", use_container_width=True):
+            kuyruk_takilanlari_bekliyora_al(fuar_etiketi, dakika=2)
+            st.session_state["force_queue_run"] = True
             st.rerun()
 
     with c_yansit:
@@ -4588,7 +4631,12 @@ try:
             st.rerun()
 
     with c_sifirla:
-        with st.expander("🧹 Kuyruğu Sıfırla"):
+        with st.expander("🧹 Kuyruk İşlemleri"):
+            if st.button("Takılı İşleniyor Kayıtlarını Bekliyor Yap"):
+                adet_k = kuyruk_takilanlari_bekliyora_al(fuar_etiketi, dakika=0)
+                st.success(f"{adet_k} takılı kayıt tekrar Bekliyor durumuna alındı.")
+                st.rerun()
+
             if st.button("Bu fuar kuyruğunu sıfırla"):
                 kuyruk_sifirla(fuar_etiketi)
                 st.success("Kuyruk sıfırlandı.")
@@ -4614,11 +4662,15 @@ if st.session_state["ana_liste"]:
 
     tara = st.button("⚡ BU PAKETİ TARA VE ARŞİVE KAYDET", use_container_width=True)
 
-    if tara:
+    if tara or st.session_state.get("force_queue_run", False):
+        st.session_state["force_queue_run"] = False
         # Önce mevcut havuzu kalıcı kuyruğa yaz.
         # Böylece sistem 139 firma bulduysa 139'u da kaybolmadan bekleyen iş olur.
         tum_firmalar = st.session_state["ana_liste"]
         kuyruga_firma_ekle(fuar_etiketi, tum_firmalar)
+
+        # Kesinti nedeniyle İşleniyor durumunda takılı kalanları tekrar Bekliyor yap.
+        kuyruk_takilanlari_bekliyora_al(fuar_etiketi, dakika=2)
 
         # İşlenecek paket artık session'dan değil, kalıcı kuyruktan alınır.
         paket_firmalar = kuyruk_bekleyen_firmalari_getir(
@@ -4791,7 +4843,7 @@ if st.session_state["ana_liste"]:
         ]
 
         if kalan_sonraki > 0:
-            st.warning(f"📦 Bu paket bitti. Kuyrukta yaklaşık {kalan_sonraki} firma kaldı. Devam etmek için 'Kaldığı Yerden Devam Et' veya tekrar paket tarama butonuna bas.")
+            st.warning(f"📦 Bu paket bitti. Kuyrukta yaklaşık {kalan_sonraki} firma kaldı. Devam etmek için 'Kuyruktan Sonraki Paketi Tara' butonuna bas.")
         else:
             st.success("🎉 Kalıcı kuyruktaki tüm firmalar tamamlandı.")
 
@@ -4972,6 +5024,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.5
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.6
 </div>
 """, unsafe_allow_html=True)
