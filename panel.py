@@ -7303,6 +7303,200 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
+# V78 FAST BALANCED ROUTER
+# V77'nin agir arama/contact tamamlayicisini Dengeli moddan cikarir.
+# Hedef: Dengeli mod seri sonuc uretecek; Derin mod eksikler icin agir tamamlayici calistiracak.
+# ============================================================
+
+V77_FIRMA_WEBSITE_BUL = firma_websitesi_bul
+V77_WEBSITE_ILETISIM_BUL = websitesinden_iletisim_bul
+V77_DERIN_BILGI_BUL = derin_bilgi_bul
+
+
+def v78_light_direct_site_bul(firma_adi):
+    """
+    Dengeli mod icin kisa ve ucuz resmi domain denemesi.
+    Yanlis pozitifleri azaltmak icin generic rootlari atlar, ama cok fazla sayfa gezmez.
+    """
+    try:
+        candidates = []
+        for url in v77_priority_domain_candidates(firma_adi)[:28]:
+            root = v72_domain_root(url)
+            if root in V74_GENERIC_ROOTS and v74_expected_groups(firma_adi):
+                continue
+            if url not in candidates:
+                candidates.append(url)
+
+        for url in candidates[:14]:
+            try:
+                r = guvenli_get(url, timeout=3, referer="https://www.google.com/")
+                final_url = getattr(r, "url", url) or url
+                if r.status_code >= 500:
+                    continue
+                text = temiz_metin((r.text or "")[:12000]) if r.status_code < 400 else ""
+                score = v77_official_candidate_score(final_url, firma_adi, text)
+                if score >= (72 if v74_expected_groups(firma_adi) else 45):
+                    return final_url
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
+
+
+def firma_websitesi_bul(firma_adi):
+    """
+    V78:
+    - Dengeli/Hizli: once ucuz direkt domain + V75/V76 hafif motor.
+    - Derin: V77 agir arama-snippet motorunu kullan.
+    """
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v78:" + SCAN_MODE + ":" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    if SCAN_MODE == "Derin Tarama":
+        web = V77_FIRMA_WEBSITE_BUL(firma_adi_temiz)
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    direct = v78_light_direct_site_bul(firma_adi_temiz)
+    if direct:
+        WEBSITE_CACHE[cache_key] = direct
+        return direct
+
+    # V76 motoru V77'ye gore daha hafif; Dengeli modda bunu ana fallback yap.
+    try:
+        web = V76_FIRMA_WEBSITE_BUL(firma_adi_temiz)
+    except Exception:
+        web = ""
+
+    WEBSITE_CACHE[cache_key] = web or ""
+    return web or ""
+
+
+def v78_fast_contact_paths(web_url):
+    root = v75_root_url(web_url)
+    parsed = urlparse(normalize_url(web_url))
+    paths = [
+        "", "/", "/contact", "/contact-us", "/contacts",
+        "/iletisim", "/iletişim", "/tr/contact", "/tr/iletisim",
+        "/tr/iletişim", "/en/contact", "/en/contact-us",
+        "/kurumsal/iletisim", "/corporate/contact"
+    ]
+
+    parts = [p for p in parsed.path.split("/") if p]
+    if parts and parts[0].lower() in ["tr", "en"]:
+        lang = "/" + parts[0].lower()
+        paths = ["", "/", lang + "/contact", lang + "/iletisim", lang + "/iletişim"] + paths
+
+    urls = []
+    for p in paths:
+        u = normalize_url(root + p)
+        if url_gecerli_mi(u) and u not in urls:
+            urls.append(u)
+    return urls[:10]
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    """
+    V78:
+    Dengeli modda sadece ayni site icindeki en olasi contact sayfalari okunur.
+    V77 arama-snippet completion sadece Derin Tarama'da calisir.
+    """
+    if SCAN_MODE == "Derin Tarama":
+        return V77_WEBSITE_ILETISIM_BUL(web_url, firma_adi=firma_adi)
+
+    sonuc = {
+        "web_adresi": web_url or "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "Basladi",
+        "hata": ""
+    }
+
+    if not web_url:
+        sonuc["durum"] = "Web sitesi bulunamadi"
+        return sonuc
+
+    mailler = []
+    telefonlar = []
+    kaynak = normalize_url(web_url)
+    okunan = 0
+
+    for idx, u in enumerate(v78_fast_contact_paths(web_url)):
+        try:
+            data = sayfa_deep_contact_oku(u, referer=web_url if idx else "https://www.google.com/")
+            if not data.get("ok"):
+                continue
+            okunan += 1
+            if data.get("mailler"):
+                mailler.extend(data["mailler"])
+                kaynak = u
+            if data.get("telefonlar"):
+                telefonlar.extend(data["telefonlar"])
+                kaynak = u
+
+            filtered_mail = v75_filter_mails_for_company(mailler, web_url, firma_adi)
+            filtered_tel = temiz_telefon_listesi(telefonlar)
+            if filtered_mail and filtered_tel:
+                break
+        except Exception:
+            continue
+
+    mailler = v75_filter_mails_for_company(mailler, web_url, firma_adi)
+    telefonlar = temiz_telefon_listesi(telefonlar)
+
+    if mailler:
+        sonuc["eposta"] = ", ".join(mailler[:5])
+    if telefonlar:
+        sonuc["telefon"] = ", ".join(telefonlar[:5])
+
+    sonuc["kaynak"] = kaynak
+    if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = f"Tamamlandi | V78 fast contact sayfa: {okunan}"
+    elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = f"Kismi tamamlandi | V78 fast contact sayfa: {okunan}"
+    else:
+        sonuc["durum"] = f"Web bulundu, iletisim bulunamadi | V78 fast contact sayfa: {okunan}"
+
+    return sonuc
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+
+    try:
+        time.sleep(random.uniform(0.4, 0.9))
+        web = firma_websitesi_bul(firma_adi)
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V78 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
