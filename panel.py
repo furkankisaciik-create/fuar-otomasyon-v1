@@ -4712,8 +4712,8 @@ def sure_formatla(saniye):
 
 
 # ============================================================
-# V72 QUALITY CORE OVERRIDES
-# Eski panel UI/kuyruk/arsiv korunur; kritik zeka motoru burada guclenir.
+# V73 FAST BALANCED QUALITY CORE OVERRIDES
+# Eski panel UI/kuyruk/arsiv korunur; Dengeli mod hizlandirilir.
 # ============================================================
 
 try:
@@ -4741,6 +4741,48 @@ V72_CONTACT_WORDS = (
     "kurumsal", "corporate", "about", "hakkimizda", "hakkımızda",
     "location", "locations", "adres", "address", "footer", "sitemap"
 )
+
+
+def v73_mode_limits():
+    """
+    Streamlit Cloud icin mod bazli is limiti.
+    V72 cok fazla aday denedigi icin ilk sonucun gelmesi uzuyordu.
+    V73'te Dengeli mod once hizli sonuc uretir; Derin mod sadece eksikler icindir.
+    """
+    if SCAN_MODE == "Hızlı Tarama":
+        return {
+            "query_limit": 1,
+            "candidate_limit": 4,
+            "direct_limit": 0,
+            "contact_limit": 5,
+            "search_timeout": 4,
+            "site_timeout": 4,
+            "contact_timeout": 4,
+            "firma_cap": 65,
+        }
+
+    if SCAN_MODE == "Derin Tarama":
+        return {
+            "query_limit": min(SEARCH_QUERY_LIMIT, 5),
+            "candidate_limit": 10,
+            "direct_limit": 22,
+            "contact_limit": 18,
+            "search_timeout": 7,
+            "site_timeout": 6,
+            "contact_timeout": 6,
+            "firma_cap": 150,
+        }
+
+    return {
+        "query_limit": min(SEARCH_QUERY_LIMIT, 2),
+        "candidate_limit": 6,
+        "direct_limit": 6,
+        "contact_limit": 7,
+        "search_timeout": 5,
+        "site_timeout": 5,
+        "contact_timeout": 5,
+        "firma_cap": 85,
+    }
 
 
 def durum_bildir(*args, **kwargs):
@@ -4906,7 +4948,7 @@ def aday_site_oku_ve_puanla(url, firma_adi):
         if v72_url_kotu_mu(url):
             return {"url": url, "puan": -100, "text": ""}
 
-        r = guvenli_get(url, timeout=8, referer="https://www.google.com/")
+        r = guvenli_get(url, timeout=v73_mode_limits()["site_timeout"], referer="https://www.google.com/")
         if r.status_code >= 500:
             return {"url": url, "puan": -45, "text": ""}
         if r.status_code >= 400:
@@ -4937,7 +4979,8 @@ def en_iyi_websitesini_sec(linkler, firma_adi):
     if not temiz:
         return ""
 
-    sonuclar = [aday_site_oku_ve_puanla(link, firma_adi) for link in temiz[:12]]
+    candidate_limit = v73_mode_limits()["candidate_limit"]
+    sonuclar = [aday_site_oku_ve_puanla(link, firma_adi) for link in temiz[:candidate_limit]]
     sonuclar = sorted(sonuclar, key=lambda x: x.get("puan", -100), reverse=True)
 
     if sonuclar and sonuclar[0]["puan"] >= 28:
@@ -4977,39 +5020,46 @@ def v72_arama_sonuclarindan_link_cek(html):
 
 def firma_websitesi_bul(firma_adi):
     """
-    V72 web bulma:
+    V73 web bulma:
     1) Bing + DuckDuckGo sorgu sonuclari
-    2) Derin modda Playwright arama fallback
-    3) Direkt marka domain adaylari
+    2) Dengeli modda sinirli aday puanlama
+    3) Direkt domain denemesi sadece kisa limitlerle
     """
     firma_adi_temiz = firma_adi_temizle(firma_adi)
     if not firma_adi_temiz:
         return ""
 
-    cache_key = "v72:" + firma_adi_temiz.lower().strip()
+    cache_key = "v73:" + firma_adi_temiz.lower().strip()
     if cache_key in WEBSITE_CACHE:
         return WEBSITE_CACHE[cache_key]
 
-    sorgular = firma_arama_sorgulari_uret(firma_adi_temiz)[:SEARCH_QUERY_LIMIT]
+    limits = v73_mode_limits()
+    deadline = time.time() + limits["firma_cap"]
+    sorgular = firma_arama_sorgulari_uret(firma_adi_temiz)[:limits["query_limit"]]
     bulunan_linkler = []
 
     for sorgu_text in sorgular:
+        if time.time() > deadline:
+            break
+
         arama_url_listesi = [
             f"https://www.bing.com/search?q={quote_plus(sorgu_text)}",
             f"https://duckduckgo.com/html/?q={quote_plus(sorgu_text)}",
         ]
 
         for arama_url in arama_url_listesi:
+            if time.time() > deadline:
+                break
             try:
-                time.sleep(random.uniform(0.25, 0.75))
-                res = guvenli_get(arama_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
+                time.sleep(random.uniform(0.12, 0.35))
+                res = guvenli_get(arama_url, timeout=limits["search_timeout"], referer="https://www.google.com/")
                 if res.status_code >= 400:
                     continue
                 bulunan_linkler.extend(v72_arama_sonuclarindan_link_cek(res.text or ""))
             except Exception as e:
-                logging.warning(f"V72 arama hatasi: {firma_adi_temiz} - {str(e)}")
+                logging.warning(f"V73 arama hatasi: {firma_adi_temiz} - {str(e)}")
 
-        if len(set([domain_al(x) for x in bulunan_linkler if domain_al(x)])) >= 6:
+        if len(set([domain_al(x) for x in bulunan_linkler if domain_al(x)])) >= limits["candidate_limit"]:
             break
 
     secilen = en_iyi_websitesini_sec(bulunan_linkler, firma_adi_temiz)
@@ -5017,8 +5067,10 @@ def firma_websitesi_bul(firma_adi):
         WEBSITE_CACHE[cache_key] = secilen
         return secilen
 
-    if PLAYWRIGHT_FALLBACK_ENABLED:
-        for sorgu_text in sorgular[:3]:
+    if PLAYWRIGHT_FALLBACK_ENABLED and time.time() < deadline:
+        for sorgu_text in sorgular[:2]:
+            if time.time() > deadline:
+                break
             try:
                 bulunan_linkler.extend(playwright_arama_linkleri_bul(sorgu_text))
                 secilen = en_iyi_websitesini_sec(bulunan_linkler, firma_adi_temiz)
@@ -5028,10 +5080,12 @@ def firma_websitesi_bul(firma_adi):
             except Exception:
                 continue
 
-    # Arama motoru zayif kalirsa direkt marka domainlerini dene.
-    direct_candidates = domain_adaylari_uret(firma_adi_temiz)[:60]
+    # Arama motoru zayif kalirsa direkt marka domainlerini kisa limitlerle dene.
+    direct_candidates = domain_adaylari_uret(firma_adi_temiz)[:limits["direct_limit"]]
     direct_scores = []
     for aday in direct_candidates:
+        if time.time() > deadline:
+            break
         s = aday_site_oku_ve_puanla(aday, firma_adi_temiz)
         if s.get("puan", -100) >= 12:
             direct_scores.append(s)
@@ -5120,7 +5174,7 @@ def v72_sitemap_contact_urls(web_url):
     try:
         parsed = urlparse(normalize_url(web_url))
         root = f"{parsed.scheme}://{parsed.netloc}"
-        sm = guvenli_get(root + "/sitemap.xml", timeout=6, referer=web_url)
+        sm = guvenli_get(root + "/sitemap.xml", timeout=min(v73_mode_limits()["contact_timeout"], 5), referer=web_url)
         if sm.status_code < 400:
             for loc in re.findall(r"<loc>\s*([^<]+)\s*</loc>", sm.text or "", flags=re.I):
                 loc = html_entity_temizle(loc.strip())
@@ -5186,9 +5240,57 @@ def v72_html_contact_linkleri(base_url, html):
     return sorted(list(dict.fromkeys(links)), key=iletisim_linki_oncelik_puani, reverse=True)[:10]
 
 
+def sayfa_deep_contact_oku(url, referer="https://www.google.com/"):
+    """
+    V73 hizli contact okuma.
+    V72'de contact sayfalari 10 sn timeout ile cok bekleyebiliyordu.
+    Burada mod limitine gore daha kisa timeout kullanilir.
+    """
+    sonuc = {"mailler": [], "telefonlar": [], "html": "", "text": "", "ok": False}
+
+    try:
+        r = guvenli_get(url, timeout=v73_mode_limits()["contact_timeout"], referer=referer)
+        if r.status_code >= 400:
+            return sonuc
+
+        html = html_entity_temizle(r.text or "")
+        attr_text = attribute_iceriklerini_topla(html)
+        js_text = js_json_iletisim_parcalari(html)
+        visible_text = temiz_metin(html)
+
+        full_text = " ".join([html, attr_text, js_text, visible_text])
+        full_text = html_entity_temizle(full_text)
+
+        mailler = []
+        telefonlar = []
+
+        mailto_mailler, tel_linkleri = mailto_ve_tel_linklerini_ayikla(html)
+
+        mailler.extend(mailto_mailler)
+        mailler.extend(cloudflare_mailleri_ayikla(html))
+        mailler.extend(mail_label_yakinindan_ayikla(full_text))
+        mailler.extend(eposta_ayikla(full_text))
+
+        telefonlar.extend(tel_linkleri)
+        telefonlar.extend(whatsapp_telefonlari_ayikla(html))
+        telefonlar.extend(telefon_label_yakinindan_ayikla(full_text))
+        telefonlar.extend(telefon_ayikla(full_text))
+
+        sonuc["mailler"] = temiz_mail_listesi(mailler)
+        sonuc["telefonlar"] = temiz_telefon_listesi(telefonlar)
+        sonuc["html"] = html
+        sonuc["text"] = visible_text
+        sonuc["ok"] = True
+
+    except Exception:
+        pass
+
+    return sonuc
+
+
 def websitesinden_iletisim_bul(web_url):
     """
-    V72 contact extraction:
+    V73 contact extraction:
     homepage + HTML contact links + generated paths + sitemap + optional Playwright.
     """
     sonuc = {
@@ -5226,7 +5328,7 @@ def websitesinden_iletisim_bul(web_url):
         except Exception:
             pass
 
-        scan_limit = 10 if SCAN_MODE == "Hızlı Tarama" else 18 if SCAN_MODE == "Dengeli" else 28
+        scan_limit = v73_mode_limits()["contact_limit"]
         seen = set()
         for idx, u in enumerate(aday_url_listesi[:scan_limit]):
             if u in seen:
