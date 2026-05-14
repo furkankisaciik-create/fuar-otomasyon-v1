@@ -4712,6 +4712,673 @@ def sure_formatla(saniye):
 
 
 # ============================================================
+# V72 QUALITY CORE OVERRIDES
+# Eski panel UI/kuyruk/arsiv korunur; kritik zeka motoru burada guclenir.
+# ============================================================
+
+try:
+    from difflib import SequenceMatcher
+except Exception:
+    SequenceMatcher = None
+
+
+V72_BAD_RESULT_DOMAINS = {
+    "facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com",
+    "youtube.com", "tiktok.com", "pinterest.com", "wikipedia.org",
+    "google.com", "maps.google.com", "bing.com", "duckduckgo.com",
+    "yellowpages.com", "kompass.com", "europages.com", "find.com.tr",
+    "firma rehberi", "firmasec.com", "turkishexporter.net",
+}
+
+V72_ROLE_MAIL_PREFIXES = (
+    "info@", "sales@", "export@", "contact@", "iletisim@", "iletişim@",
+    "marketing@", "office@", "support@", "hello@", "mail@"
+)
+
+V72_CONTACT_WORDS = (
+    "iletisim", "iletişim", "contact", "contact-us", "contacts",
+    "bize-ulasin", "bize-ulaşın", "communication", "reach-us",
+    "kurumsal", "corporate", "about", "hakkimizda", "hakkımızda",
+    "location", "locations", "adres", "address", "footer", "sitemap"
+)
+
+
+def durum_bildir(*args, **kwargs):
+    """
+    Bazı eski fallback fonksiyonları global durum_bildir bekliyor.
+    Streamlit progress callback yoksa sessiz no-op olarak çalışır.
+    """
+    return None
+
+
+def v72_domain_root(url_or_domain):
+    d = str(url_or_domain or "").strip().lower()
+    if "://" in d:
+        d = domain_al(d)
+    d = d.replace("www.", "")
+    d = d.split("/")[0].split(":")[0]
+    d = re.sub(
+        r"\.(com\.tr|net\.tr|org\.tr|edu\.tr|gov\.tr|co\.uk|com\.cn|com\.br|com|net|org|tr|co|io|de|it|fr|uk|us|nl|pl|ru|cn|in|ae|es|pt)$",
+        "",
+        d,
+    )
+    return normalize_domain_token(d)
+
+
+def v72_same_site(url, root_domain):
+    try:
+        d = domain_al(url)
+        root = domain_al(root_domain) if "://" in str(root_domain) else str(root_domain)
+        d = d.replace("www.", "")
+        root = root.replace("www.", "")
+        return d == root or d.endswith("." + root) or root.endswith("." + d)
+    except Exception:
+        return False
+
+
+def v72_token_similarity(a, b):
+    a = normalize_domain_token(a)
+    b = normalize_domain_token(b)
+    if not a or not b:
+        return 0
+    if a == b:
+        return 100
+    if a in b or b in a:
+        return 82
+    if SequenceMatcher:
+        return int(SequenceMatcher(None, a, b).ratio() * 100)
+    return 0
+
+
+def v72_company_profile(firma_adi):
+    words = firma_onemli_kelimeleri(firma_adi)
+    profile = firma_domain_kelime_profili(firma_adi)
+    marka = profile.get("marka") or (normalize_domain_token(words[0]) if words else "")
+    tokens = []
+    for w in [marka] + words + profile.get("marka_adaylari", []) + profile.get("destek_kelimeler", []):
+        t = normalize_domain_token(w)
+        if t and len(t) >= 2 and t not in tokens:
+            tokens.append(t)
+    return {"marka": marka, "tokens": tokens[:10], "words": words[:10]}
+
+
+def v72_url_kotu_mu(url):
+    low = str(url or "").lower()
+    if not url_gecerli_mi(url):
+        return True
+    if istenmeyen_link_mi(url):
+        return True
+    if any(x in low for x in [
+        "/search?", "webcache", "translate.google", "ads.", "doubleclick",
+        "facebook.", "instagram.", "linkedin.", "youtube.", "twitter.", "x.com/",
+        "pinterest.", "wikipedia.", "blogspot.", "wordpress.com",
+        "firma-rehberi", "yellow", "directory", "haber", "/news/"
+    ]):
+        return True
+    if any(low.endswith(ext) for ext in [".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".doc", ".docx", ".xls", ".xlsx", ".zip"]):
+        return True
+    return False
+
+
+def domain_puanla(url, firma_adi, page_text=""):
+    """
+    V72 domain puanlama:
+    - Marka kokunu ana sinyal kabul eder.
+    - Sayfa icerigi ve contact sinyaliyle dogrular.
+    - Rehber/sosyal/parking sonuclarini sert cezalandirir.
+    """
+    try:
+        if v72_url_kotu_mu(url):
+            return -100
+
+        domain = domain_al(url)
+        root = v72_domain_root(domain)
+        profile = v72_company_profile(firma_adi)
+        marka = profile["marka"]
+        tokens = profile["tokens"]
+        text = turkce_karakter_temizle((page_text or "").lower()[:20000])
+        score = 0
+
+        if not root or not tokens:
+            return -80
+
+        marka_sim = v72_token_similarity(root, marka)
+        if marka_sim >= 96:
+            score += 88
+        elif marka_sim >= 82:
+            score += 66
+        elif marka and (marka in root or root in marka):
+            score += 62
+        elif marka_sim >= 68:
+            score += 30
+
+        domain_hits = 0
+        text_hits = 0
+        for t in tokens:
+            if t in root or v72_token_similarity(root, t) >= 86:
+                domain_hits += 1
+            if len(t) >= 3 and t in text:
+                text_hits += 1
+
+        score += min(domain_hits * 22, 58)
+        score += min(text_hits * 9, 36)
+
+        if len(tokens) >= 2:
+            combo = tokens[0] + tokens[1]
+            if combo in root.replace("-", ""):
+                score += 55
+
+        if domain.endswith(".com.tr"):
+            score += 24
+        elif domain.endswith(".tr"):
+            score += 18
+        elif domain.endswith(".com"):
+            score += 8
+
+        low_url = str(url or "").lower()
+        if any(w in low_url for w in V72_CONTACT_WORDS):
+            score += 8
+
+        if any(w in text for w in ["iletisim", "iletişim", "contact", "email", "e-posta", "telefon", "phone"]):
+            score += 10
+
+        if any(w in text for w in ["domain is for sale", "buy this domain", "parked domain", "sedo.com", "godaddy"]):
+            score -= 95
+
+        if any(w in low_url for w in ["rehber", "directory", "yellow", "haber", "news", "blog"]):
+            score -= 45
+
+        risky_short = {"abc", "star", "mega", "global", "best", "pro", "max", "net", "sun"}
+        if marka in risky_short and root == marka and text_hits == 0:
+            score -= 50
+
+        if marka and marka not in root and root not in marka and domain_hits == 0:
+            score -= 35
+
+        return score
+    except Exception:
+        return -100
+
+
+def aday_site_oku_ve_puanla(url, firma_adi):
+    try:
+        url = normalize_url(url)
+        if v72_url_kotu_mu(url):
+            return {"url": url, "puan": -100, "text": ""}
+
+        r = guvenli_get(url, timeout=8, referer="https://www.google.com/")
+        if r.status_code >= 500:
+            return {"url": url, "puan": -45, "text": ""}
+        if r.status_code >= 400:
+            # Bazi siteler botlara 403 verir; domain yine de kuvvetli olabilir.
+            return {"url": url, "puan": max(domain_puanla(url, firma_adi, ""), -20), "text": ""}
+
+        html = r.text or ""
+        text = temiz_metin(html)
+        puan = domain_puanla(url, firma_adi, text)
+        return {"url": url, "puan": puan, "text": text}
+    except Exception:
+        return {"url": url, "puan": -30, "text": ""}
+
+
+def en_iyi_websitesini_sec(linkler, firma_adi):
+    temiz = []
+    seen = set()
+    for link in linkler or []:
+        link = normalize_url(arama_linkini_temizle(link))
+        if v72_url_kotu_mu(link):
+            continue
+        d = domain_al(link)
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        temiz.append(link)
+
+    if not temiz:
+        return ""
+
+    sonuclar = [aday_site_oku_ve_puanla(link, firma_adi) for link in temiz[:12]]
+    sonuclar = sorted(sonuclar, key=lambda x: x.get("puan", -100), reverse=True)
+
+    if sonuclar and sonuclar[0]["puan"] >= 28:
+        return sonuclar[0]["url"]
+
+    for s in sonuclar:
+        d = domain_al(s["url"])
+        if d.endswith(".com.tr") and s.get("puan", 0) >= 8:
+            return s["url"]
+
+    if sonuclar and sonuclar[0].get("puan", 0) > 5:
+        return sonuclar[0]["url"]
+
+    return ""
+
+
+def v72_arama_sonuclarindan_link_cek(html):
+    linkler = []
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = arama_linkini_temizle(a.get("href", ""))
+            href = normalize_url(href)
+            if href and not v72_url_kotu_mu(href):
+                linkler.append(href)
+    except Exception:
+        pass
+
+    final, seen = [], set()
+    for l in linkler:
+        d = domain_al(l)
+        if d and d not in seen:
+            seen.add(d)
+            final.append(l)
+    return final[:20]
+
+
+def firma_websitesi_bul(firma_adi):
+    """
+    V72 web bulma:
+    1) Bing + DuckDuckGo sorgu sonuclari
+    2) Derin modda Playwright arama fallback
+    3) Direkt marka domain adaylari
+    """
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v72:" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    sorgular = firma_arama_sorgulari_uret(firma_adi_temiz)[:SEARCH_QUERY_LIMIT]
+    bulunan_linkler = []
+
+    for sorgu_text in sorgular:
+        arama_url_listesi = [
+            f"https://www.bing.com/search?q={quote_plus(sorgu_text)}",
+            f"https://duckduckgo.com/html/?q={quote_plus(sorgu_text)}",
+        ]
+
+        for arama_url in arama_url_listesi:
+            try:
+                time.sleep(random.uniform(0.25, 0.75))
+                res = guvenli_get(arama_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
+                if res.status_code >= 400:
+                    continue
+                bulunan_linkler.extend(v72_arama_sonuclarindan_link_cek(res.text or ""))
+            except Exception as e:
+                logging.warning(f"V72 arama hatasi: {firma_adi_temiz} - {str(e)}")
+
+        if len(set([domain_al(x) for x in bulunan_linkler if domain_al(x)])) >= 6:
+            break
+
+    secilen = en_iyi_websitesini_sec(bulunan_linkler, firma_adi_temiz)
+    if secilen:
+        WEBSITE_CACHE[cache_key] = secilen
+        return secilen
+
+    if PLAYWRIGHT_FALLBACK_ENABLED:
+        for sorgu_text in sorgular[:3]:
+            try:
+                bulunan_linkler.extend(playwright_arama_linkleri_bul(sorgu_text))
+                secilen = en_iyi_websitesini_sec(bulunan_linkler, firma_adi_temiz)
+                if secilen:
+                    WEBSITE_CACHE[cache_key] = secilen
+                    return secilen
+            except Exception:
+                continue
+
+    # Arama motoru zayif kalirsa direkt marka domainlerini dene.
+    direct_candidates = domain_adaylari_uret(firma_adi_temiz)[:60]
+    direct_scores = []
+    for aday in direct_candidates:
+        s = aday_site_oku_ve_puanla(aday, firma_adi_temiz)
+        if s.get("puan", -100) >= 12:
+            direct_scores.append(s)
+
+    if direct_scores:
+        direct_scores = sorted(direct_scores, key=lambda x: x.get("puan", 0), reverse=True)
+        WEBSITE_CACHE[cache_key] = direct_scores[0]["url"]
+        return direct_scores[0]["url"]
+
+    WEBSITE_CACHE[cache_key] = ""
+    return ""
+
+
+def temiz_mail_listesi(mailler):
+    final = []
+    yasakli = [
+        "example.com", "domain.com", "email.com", "sentry.", "wixpress.",
+        "schema.org", "wordpress.org", "yoursite", "yourdomain", "test.com",
+        "localhost", "noreply@", "no-reply@"
+    ]
+
+    for m in mailler or []:
+        m = html_entity_temizle(str(m)).strip().lower()
+        m = m.replace("mailto:", "").split("?")[0]
+        m = re.sub(r"^[^a-z0-9]+|[^a-z0-9.]+$", "", m)
+
+        if not re.fullmatch(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", m):
+            continue
+        if any(y in m for y in yasakli):
+            continue
+        if len(m) > 90:
+            continue
+        if m not in final:
+            final.append(m)
+
+    final = sorted(
+        final,
+        key=lambda x: (
+            0 if x.startswith(V72_ROLE_MAIL_PREFIXES) else 1,
+            0 if not any(x.endswith(g) for g in ["@gmail.com", "@hotmail.com", "@outlook.com", "@yahoo.com"]) else 1,
+            x,
+        )
+    )
+    return final[:10]
+
+
+def temiz_telefon_listesi(telefonlar):
+    final = []
+    seen_digits = set()
+
+    for tel in telefonlar or []:
+        tel = html_entity_temizle(str(tel)).strip()
+        tel = tel.replace("tel:", "")
+        tel = re.sub(r"\s+", " ", tel)
+        digits = re.sub(r"\D", "", tel)
+
+        if len(digits) < 10 or len(digits) > 15:
+            continue
+        if len(set(digits)) <= 2:
+            continue
+
+        key = digits[-10:] if len(digits) >= 10 else digits
+        if key in seen_digits:
+            continue
+        seen_digits.add(key)
+
+        if tel.startswith("00"):
+            tel = "+" + tel[2:]
+        final.append(tel)
+
+    final = sorted(final, key=lambda x: 0 if "+90" in x or re.sub(r"\D", "", x).startswith("90") else 1)
+    return final[:8]
+
+
+def v72_mail_site_uyumu(mail, web_url):
+    try:
+        mail_domain = str(mail).split("@", 1)[1].lower().replace("www.", "")
+        site_domain = domain_al(web_url).lower().replace("www.", "")
+        return mail_domain == site_domain or mail_domain.endswith("." + site_domain) or site_domain.endswith("." + mail_domain)
+    except Exception:
+        return False
+
+
+def v72_sitemap_contact_urls(web_url):
+    urls = []
+    try:
+        parsed = urlparse(normalize_url(web_url))
+        root = f"{parsed.scheme}://{parsed.netloc}"
+        sm = guvenli_get(root + "/sitemap.xml", timeout=6, referer=web_url)
+        if sm.status_code < 400:
+            for loc in re.findall(r"<loc>\s*([^<]+)\s*</loc>", sm.text or "", flags=re.I):
+                loc = html_entity_temizle(loc.strip())
+                low = turkce_karakter_temizle(loc.lower())
+                if any(w in low for w in V72_CONTACT_WORDS):
+                    urls.append(loc)
+    except Exception:
+        pass
+    return urls[:8]
+
+
+def contact_url_adaylari_uret(web_url):
+    web_url = normalize_url(web_url)
+    parsed = urlparse(web_url)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+
+    paths = [
+        "/iletisim", "/iletisim/", "/tr/iletisim", "/tr/iletisim/",
+        "/kurumsal/iletisim", "/kurumsal/iletisim/", "/tr/kurumsal/iletisim",
+        "/iletişim", "/bize-ulasin", "/bize-ulasin/", "/bize-ulaşın",
+        "/contact", "/contact/", "/contact-us", "/contact-us/",
+        "/contacts", "/home/contact", "/home/contacts", "/home/iletisim",
+        "/en/contact", "/en/contact/", "/en/contact-us", "/en/contact-us/",
+        "/en/contacts", "/tr/contact", "/tr/contact/",
+        "/corporate/contact", "/corporate/contact/", "/corporate/contacts",
+        "/communication", "/reach-us", "/locations", "/offices",
+        "/hakkimizda", "/hakkimizda/", "/hakkımızda", "/about", "/about/", "/about-us",
+        "/footer", "/site-haritasi", "/sitemap", "/sitemap.xml"
+    ]
+
+    adaylar = [web_url]
+    for p in paths:
+        adaylar.append(root + p)
+    adaylar.extend(v72_sitemap_contact_urls(web_url))
+
+    final, seen = [], set()
+    for u in adaylar:
+        u = normalize_url(u)
+        if not url_gecerli_mi(u):
+            continue
+        if not v72_same_site(u, root):
+            continue
+        if u not in seen:
+            seen.add(u)
+            final.append(u)
+
+    return final[:30]
+
+
+def v72_html_contact_linkleri(base_url, html):
+    links = []
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+        for a in soup.find_all("a", href=True):
+            text = turkce_karakter_temizle(temiz_metin(a.get_text(" ")).lower())
+            href_raw = a.get("href", "")
+            href = normalize_url(href_raw, base_url=base_url)
+            low = turkce_karakter_temizle((href + " " + text).lower())
+            if url_gecerli_mi(href) and v72_same_site(href, base_url) and any(w in low for w in V72_CONTACT_WORDS):
+                links.append(href)
+    except Exception:
+        pass
+    return sorted(list(dict.fromkeys(links)), key=iletisim_linki_oncelik_puani, reverse=True)[:10]
+
+
+def websitesinden_iletisim_bul(web_url):
+    """
+    V72 contact extraction:
+    homepage + HTML contact links + generated paths + sitemap + optional Playwright.
+    """
+    sonuc = {
+        "web_adresi": web_url or "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "Basladi",
+        "hata": ""
+    }
+
+    if not web_url:
+        sonuc["durum"] = "Web sitesi bulunamadi"
+        return sonuc
+
+    web_url = normalize_url(web_url)
+
+    try:
+        tum_mailler = []
+        tum_telefonlar = []
+        kaynaklar = []
+        okunan = 0
+
+        aday_url_listesi = contact_url_adaylari_uret(web_url)
+
+        # Ana sayfayi once oku; oradan gercek iletisim linklerini yakala.
+        try:
+            home = sayfa_deep_contact_oku(web_url, referer="https://www.google.com/")
+            if home.get("ok"):
+                okunan += 1
+                tum_mailler.extend(home.get("mailler", []))
+                tum_telefonlar.extend(home.get("telefonlar", []))
+                kaynaklar.append(web_url)
+                aday_url_listesi = [web_url] + v72_html_contact_linkleri(web_url, home.get("html", "")) + aday_url_listesi
+        except Exception:
+            pass
+
+        scan_limit = 10 if SCAN_MODE == "Hızlı Tarama" else 18 if SCAN_MODE == "Dengeli" else 28
+        seen = set()
+        for idx, u in enumerate(aday_url_listesi[:scan_limit]):
+            if u in seen:
+                continue
+            seen.add(u)
+            try:
+                time.sleep(random.uniform(0.12, 0.45))
+                data = sayfa_deep_contact_oku(u, referer=web_url if idx > 0 else "https://www.google.com/")
+                if not data.get("ok"):
+                    continue
+                okunan += 1
+                if data.get("mailler"):
+                    tum_mailler.extend(data["mailler"])
+                    kaynaklar.append(u)
+                if data.get("telefonlar"):
+                    tum_telefonlar.extend(data["telefonlar"])
+                    kaynaklar.append(u)
+                if temiz_mail_listesi(tum_mailler) and temiz_telefon_listesi(tum_telefonlar):
+                    break
+            except Exception:
+                continue
+
+        if (not temiz_mail_listesi(tum_mailler) or not temiz_telefon_listesi(tum_telefonlar)) and PLAYWRIGHT_FALLBACK_ENABLED:
+            for u in list(dict.fromkeys(aday_url_listesi))[:5]:
+                data = playwright_deep_contact_oku(u)
+                if data.get("mailler"):
+                    tum_mailler.extend(data["mailler"])
+                    kaynaklar.append(u)
+                if data.get("telefonlar"):
+                    tum_telefonlar.extend(data["telefonlar"])
+                    kaynaklar.append(u)
+                if temiz_mail_listesi(tum_mailler) and temiz_telefon_listesi(tum_telefonlar):
+                    break
+
+        temiz_mailler = temiz_mail_listesi(tum_mailler)
+        site_uyumlu = [m for m in temiz_mailler if v72_mail_site_uyumu(m, web_url)]
+        if site_uyumlu:
+            temiz_mailler = site_uyumlu + [m for m in temiz_mailler if m not in site_uyumlu]
+
+        temiz_telefonlar = temiz_telefon_listesi(tum_telefonlar)
+
+        if temiz_mailler:
+            sonuc["eposta"] = ", ".join(temiz_mailler[:5])
+        if temiz_telefonlar:
+            sonuc["telefon"] = ", ".join(temiz_telefonlar[:5])
+
+        sonuc["kaynak"] = list(dict.fromkeys(kaynaklar))[0] if kaynaklar else web_url
+
+        if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+            sonuc["durum"] = f"Tamamlandi | V72 contact sayfa: {okunan}"
+        elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+            sonuc["durum"] = f"Kismi tamamlandi | V72 contact sayfa: {okunan}"
+        else:
+            sonuc["durum"] = f"Web bulundu, iletisim bulunamadi | V72 contact sayfa: {okunan}"
+
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V72 site iletisim hatasi: {web_url} - {str(e)}")
+
+    return sonuc
+
+
+def sonuc_guven_skorlari_ekle(sonuc, firma_adi):
+    """
+    Eksik olan merkezi skor fonksiyonu.
+    Arşiv filtrelerinin anlamlı çalışması için web/mail/telefon/genel güveni üretir.
+    """
+    try:
+        web = sonuc.get("web_adresi", "")
+        mail = sonuc.get("eposta", "")
+        tel = sonuc.get("telefon", "")
+
+        web_guven = 0
+        if web and web != "Bulunamadi":
+            puan = domain_puanla(web, firma_adi, "")
+            if puan >= 80:
+                web_guven = 95
+            elif puan >= 50:
+                web_guven = 82
+            elif puan >= 25:
+                web_guven = 68
+            elif puan >= 8:
+                web_guven = 50
+            else:
+                web_guven = 30
+
+        mail_guven = 0
+        mailler = [] if not mail or mail == "Bulunamadi" else temiz_mail_listesi(str(mail).split(","))
+        if mailler:
+            mail_guven = 55
+            if web and web != "Bulunamadi" and any(v72_mail_site_uyumu(m, web) for m in mailler):
+                mail_guven += 35
+            if any(m.startswith(V72_ROLE_MAIL_PREFIXES) for m in mailler):
+                mail_guven += 10
+            mail_guven = min(mail_guven, 100)
+
+        telefon_guven = 0
+        telefonlar = [] if not tel or tel == "Bulunamadi" else temiz_telefon_listesi(str(tel).split(","))
+        if telefonlar:
+            telefon_guven = 62
+            digits = " ".join([re.sub(r"\D", "", t) for t in telefonlar])
+            if any(10 <= len(re.sub(r"\D", "", t)) <= 15 for t in telefonlar):
+                telefon_guven += 18
+            if "90" in digits[:4] or any(str(t).strip().startswith("+90") for t in telefonlar):
+                telefon_guven += 12
+            telefon_guven = min(telefon_guven, 100)
+
+        genel = int(round((web_guven * 0.45) + (mail_guven * 0.32) + (telefon_guven * 0.23)))
+
+        site_domain = domain_al(web) if web and web != "Bulunamadi" else ""
+        joined = " ".join([str(web), str(mail), str(tel), str(sonuc.get("kaynak", ""))]).lower()
+        if site_domain.endswith(".tr") or "+90" in joined or re.search(r"\b90\d{10}\b", re.sub(r"\D", "", joined)):
+            sirket_tipi = "Yerli"
+            ulke = "Türkiye"
+            ulke_guven = 80
+        elif site_domain:
+            sirket_tipi = "Yabancı"
+            ulke = "Belirsiz"
+            ulke_guven = 35
+        else:
+            sirket_tipi = "Belirsiz"
+            ulke = "Belirsiz"
+            ulke_guven = 0
+
+        manuel = "Hayır"
+        if genel < 70 or web_guven < 50 or (mail_guven == 0 and telefon_guven == 0):
+            manuel = "Evet"
+
+        sonuc["web_guven"] = int(web_guven)
+        sonuc["mail_guven"] = int(mail_guven)
+        sonuc["telefon_guven"] = int(telefon_guven)
+        sonuc["genel_guven"] = int(genel)
+        sonuc["manuel_kontrol"] = manuel
+        sonuc["sirket_tipi"] = sirket_tipi
+        sonuc["ulke_tahmini"] = ulke
+        sonuc["ulke_guven"] = int(ulke_guven)
+        return sonuc
+    except Exception as e:
+        sonuc["web_guven"] = int(sonuc.get("web_guven", 0) or 0)
+        sonuc["mail_guven"] = int(sonuc.get("mail_guven", 0) or 0)
+        sonuc["telefon_guven"] = int(sonuc.get("telefon_guven", 0) or 0)
+        sonuc["genel_guven"] = int(sonuc.get("genel_guven", 0) or 0)
+        sonuc["manuel_kontrol"] = "Evet"
+        sonuc["sirket_tipi"] = "Belirsiz"
+        sonuc["ulke_tahmini"] = "Belirsiz"
+        sonuc["ulke_guven"] = 0
+        sonuc["hata"] = (str(sonuc.get("hata", "")) + f" | Skor hatasi: {str(e)}").strip(" |")
+        return sonuc
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
