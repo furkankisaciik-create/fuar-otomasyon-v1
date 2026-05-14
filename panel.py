@@ -9673,6 +9673,375 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
+# V84 BEST-OF ENGINES + ARSIV HAFIZASI
+# Tek motor her sitede ayni basariyi vermiyor. V84 yeni taramayi,
+# onceki basarili arsiv kayitlari ve hafif alternatif motorlarla
+# birlestirir; iyi bulunan veri sonraki guncellemede kaybolmaz.
+# ============================================================
+
+V83_FIRMA_WEBSITE_BUL_FINAL = firma_websitesi_bul
+V83_WEBSITE_ILETISIM_BUL_FINAL = websitesinden_iletisim_bul
+
+V84_EXTRA_GENERIC_ROOTS = set(V74_GENERIC_ROOTS) | {
+    "besiktas", "gelibolu", "karadeniz", "ada", "hat", "yonca", "rmk"
+}
+
+
+def v84_has_value(x):
+    return str(x or "").strip() not in ["", "nan", "NaN", "Bulunamadi", "None"]
+
+
+def v84_base_result(firma_adi):
+    return {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+
+
+def v84_bad_web_shape(web_url):
+    root = v72_domain_root(web_url)
+    root_flat = root.replace("-", "")
+    if not web_url or not url_gecerli_mi(normalize_url(web_url)):
+        return True
+    if v81_is_bad_result_url(web_url):
+        return True
+    if re.search(r"(shipyardshipyard|shipyardshipyards|marinemarine|holdingholding)$", root_flat):
+        return True
+    return False
+
+
+def v84_fetch_short_text(web_url):
+    cache_key = "v84_text:" + normalize_url(web_url)
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+    text = ""
+    try:
+        r = guvenli_get(web_url, timeout=4, referer="https://www.google.com/")
+        if int(getattr(r, "status_code", 0) or 0) < 400:
+            text = temiz_metin((r.text or "")[:26000])
+    except Exception:
+        text = ""
+    WEBSITE_CACHE[cache_key] = text
+    return text
+
+
+def v84_sector_text_ok(web_url, firma_adi, text=""):
+    groups = v74_expected_groups(firma_adi)
+    if not groups:
+        return True
+    root = v72_domain_root(web_url)
+    low_url = turkce_karakter_temizle(str(web_url or "").lower())
+    root_flat = root.replace("-", "")
+    for group in groups:
+        cfg = V74_SECTOR_GROUPS[group]
+        if any(r in root_flat or r in low_url for r in cfg["roots"]):
+            return True
+    if not text:
+        text = v84_fetch_short_text(web_url)
+    low_text = turkce_karakter_temizle(str(text or "").lower())
+    return any(v74_text_has_any(low_text, V74_SECTOR_GROUPS[g]["needles"]) for g in groups)
+
+
+def v84_web_plausible(web_url, firma_adi, text=""):
+    if v84_bad_web_shape(web_url):
+        return False
+    root = v72_domain_root(web_url)
+    groups = v74_expected_groups(firma_adi)
+    profile = v74_company_profile(firma_adi)
+    brand = profile.get("marka", "")
+    root_flat = root.replace("-", "")
+
+    if groups and root in V84_EXTRA_GENERIC_ROOTS:
+        return v84_sector_text_ok(web_url, firma_adi, text)
+
+    # Sektor firmasinda sadece marka domaini geldiginde sayfa metni sektoru desteklemeli.
+    if groups and brand and root_flat == brand and not v84_sector_text_ok(web_url, firma_adi, text):
+        return False
+
+    score = v82_official_score(web_url, firma_adi, text or "")
+    return score >= (35 if groups else 18)
+
+
+def v84_contact_values_from_result(res):
+    mails = []
+    tels = []
+    if v84_has_value(res.get("eposta")):
+        mails = temiz_mail_listesi(str(res.get("eposta", "")).split(","))
+    if v84_has_value(res.get("telefon")):
+        tels = temiz_telefon_listesi(str(res.get("telefon", "")).split(","))
+    return mails, tels
+
+
+def v84_result_quality(res, firma_adi):
+    if not res:
+        return -999
+    web = res.get("web_adresi", "")
+    if not v84_has_value(web) or not v84_web_plausible(web, firma_adi):
+        return -100
+    mails, tels = v84_contact_values_from_result(res)
+    score = 40
+    if mails:
+        score += 35
+    if tels:
+        score += 30
+    try:
+        score += min(int(res.get("genel_guven", 0) or 0), 100) / 4
+    except Exception:
+        pass
+    if str(res.get("manuel_kontrol", "")) == "Hayır":
+        score += 8
+    return score
+
+
+def v84_archive_best_result(firma_adi, require_complete=False):
+    try:
+        conn = db_baglan()
+        df = pd.read_sql_query(
+            """
+            SELECT firma_adi, web_adresi, telefon, eposta, kaynak, durum, hata,
+                   web_guven, mail_guven, telefon_guven, genel_guven,
+                   manuel_kontrol, sirket_tipi, ulke_tahmini, ulke_guven, tarih
+            FROM sonuclar
+            WHERE LOWER(TRIM(firma_adi)) = LOWER(TRIM(?))
+            ORDER BY id DESC
+            LIMIT 80
+            """,
+            conn,
+            params=(firma_adi,)
+        )
+        conn.close()
+    except Exception:
+        return None
+
+    if df.empty:
+        return None
+
+    best = None
+    best_score = -999
+    for _, row in df.iterrows():
+        res = {k: row.get(k, "") for k in df.columns}
+        res["firma_adi"] = firma_adi
+        web = res.get("web_adresi", "")
+        if not v84_has_value(web) or not v84_web_plausible(web, firma_adi):
+            continue
+        mails, tels = v84_contact_values_from_result(res)
+        if require_complete and not (mails and tels):
+            continue
+        score = v84_result_quality(res, firma_adi)
+        if score > best_score:
+            best_score = score
+            best = res
+
+    if best:
+        best["durum"] = "Arsivden en iyi dogrulanmis kayit | " + str(best.get("durum", ""))
+    return best
+
+
+def v84_merge_result(primary, candidate, firma_adi, reason="merge"):
+    if not candidate:
+        return primary
+    result = dict(primary or v84_base_result(firma_adi))
+    cand = dict(candidate)
+    cand_web = cand.get("web_adresi", "")
+    cur_web = result.get("web_adresi", "")
+
+    cand_quality = v84_result_quality(cand, firma_adi)
+    cur_quality = v84_result_quality(result, firma_adi)
+
+    if cand_quality > cur_quality + 12 and v84_has_value(cand_web):
+        result.update({
+            "web_adresi": cand_web,
+            "kaynak": cand.get("kaynak", cand_web) or cand_web,
+        })
+
+    web_for_filter = result.get("web_adresi") if v84_has_value(result.get("web_adresi")) else cand_web
+    cur_mails, cur_tels = v84_contact_values_from_result(result)
+    cand_mails, cand_tels = v84_contact_values_from_result(cand)
+    all_mails = v79_filter_mails(cur_mails + cand_mails, web_for_filter, firma_adi)
+    all_tels = temiz_telefon_listesi(cur_tels + cand_tels)
+
+    if all_mails:
+        result["eposta"] = ", ".join(all_mails[:5])
+    if all_tels:
+        result["telefon"] = ", ".join(all_tels[:5])
+    if not result.get("kaynak") and cand.get("kaynak"):
+        result["kaynak"] = cand.get("kaynak")
+
+    status_bits = [str(result.get("durum", "")).strip(), f"V84 {reason}"]
+    result["durum"] = " | ".join([x for x in status_bits if x])
+    result["firma_adi"] = firma_adi
+    return result
+
+
+def v84_site_candidates_from_engines(firma_adi):
+    candidates = []
+
+    def add(web, source):
+        web = normalize_url(web)
+        if web and v84_web_plausible(web, firma_adi):
+            candidates.append({"web": web, "source": source, "score": v82_official_score(web, firma_adi, "")})
+
+    try:
+        add(V83_FIRMA_WEBSITE_BUL_FINAL(firma_adi), "v83")
+    except Exception:
+        pass
+
+    # Kisa arama motoru: V83 bulamazsa veya eksik kalirsa, ama watchdog'u zorlamadan.
+    try:
+        searched = v83_search_official_site_bul(firma_adi, time.time() + 18)
+        add(searched, "v83_search")
+    except Exception:
+        pass
+
+    try:
+        archive = v84_archive_best_result(firma_adi, require_complete=False)
+        if archive:
+            add(archive.get("web_adresi", ""), "archive")
+    except Exception:
+        pass
+
+    final = []
+    seen = set()
+    for item in sorted(candidates, key=lambda x: x.get("score", 0), reverse=True):
+        root = v72_domain_root(item["web"])
+        if root in seen:
+            continue
+        seen.add(root)
+        final.append(item)
+    return final[:4]
+
+
+def firma_websitesi_bul(firma_adi):
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v84:" + SCAN_MODE + ":" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    # Once tam ve dogrulanmis arsiv kaydi varsa onu koru; iyi veri kaybolmasin.
+    archive_complete = v84_archive_best_result(firma_adi_temiz, require_complete=True)
+    if archive_complete:
+        web = normalize_url(archive_complete.get("web_adresi", ""))
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    candidates = v84_site_candidates_from_engines(firma_adi_temiz)
+    if candidates:
+        web = normalize_url(candidates[0]["web"])
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    WEBSITE_CACHE[cache_key] = ""
+    return ""
+
+
+def v84_contact_from_engines(web_url, firma_adi):
+    # V83 hizli motor ana kaynaktir.
+    result = V83_WEBSITE_ILETISIM_BUL_FINAL(web_url, firma_adi=firma_adi)
+
+    # Eski basarili arsiv verisi varsa eksikleri doldur.
+    archive = v84_archive_best_result(firma_adi, require_complete=False)
+    if archive:
+        result = v84_merge_result(result, archive, firma_adi, reason="arsiv hafizasi")
+
+    mails, tels = v84_contact_values_from_result(result)
+    if mails and tels:
+        result["durum"] = str(result.get("durum", "")) + " | V84 tamam"
+        return result
+
+    # Yalniz eksik kalirsa V79 universal contact'i tek seferlik dene.
+    try:
+        alt = V79_WEBSITE_ILETISIM_BUL_FINAL(web_url, firma_adi=firma_adi)
+        result = v84_merge_result(result, alt, firma_adi, reason="v79 tamamlayici")
+    except Exception:
+        pass
+
+    mails, tels = v84_contact_values_from_result(result)
+    if mails and tels:
+        result["durum"] = str(result.get("durum", "")) + " | V84 tamam"
+        return result
+
+    # Son hafif arama fallback'i.
+    try:
+        extra = v83_light_search_contact(web_url, firma_adi)
+        alt = {
+            "firma_adi": firma_adi,
+            "web_adresi": web_url,
+            "telefon": ", ".join(extra.get("telefonlar", [])) if extra.get("telefonlar") else "Bulunamadi",
+            "eposta": ", ".join(extra.get("mailler", [])) if extra.get("mailler") else "Bulunamadi",
+            "kaynak": extra.get("links", [""])[0] if extra.get("links") else web_url,
+            "durum": "V84 hafif arama tamamlayici"
+        }
+        result = v84_merge_result(result, alt, firma_adi, reason="arama tamamlayici")
+    except Exception:
+        pass
+
+    mails, tels = v84_contact_values_from_result(result)
+    if mails and tels:
+        result["durum"] = "Tamamlandi | V84 best-of contact"
+    elif mails or tels:
+        result["durum"] = "Kismi tamamlandi | V84 best-of contact"
+    else:
+        result["durum"] = "Web bulundu, iletisim bulunamadi | V84 best-of contact"
+    return result
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    if not web_url:
+        return {
+            "web_adresi": "Bulunamadi",
+            "telefon": "Bulunamadi",
+            "eposta": "Bulunamadi",
+            "kaynak": "",
+            "durum": "Web sitesi bulunamadi",
+            "hata": ""
+        }
+    return v84_contact_from_engines(normalize_url(web_url), firma_adi)
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = v84_base_result(firma_adi)
+    try:
+        time.sleep(random.uniform(0.08, 0.25))
+
+        archive_complete = v84_archive_best_result(firma_adi, require_complete=True)
+        if archive_complete:
+            archive_complete["firma_adi"] = firma_adi
+            return sonuc_guven_skorlari_ekle(archive_complete, firma_adi)
+
+        web = firma_websitesi_bul(firma_adi)
+        if not web:
+            archive_partial = v84_archive_best_result(firma_adi, require_complete=False)
+            if archive_partial and v84_has_value(archive_partial.get("web_adresi")):
+                web = archive_partial.get("web_adresi")
+            else:
+                sonuc["durum"] = "Web sitesi bulunamadi"
+                return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+
+        archive_partial = v84_archive_best_result(firma_adi, require_complete=False)
+        if archive_partial:
+            sonuc = v84_merge_result(sonuc, archive_partial, firma_adi, reason="son kontrol arsiv")
+
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V84 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
