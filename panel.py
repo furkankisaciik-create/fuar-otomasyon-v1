@@ -6940,6 +6940,369 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
+# V77 AGGRESSIVE OFFICIAL DOMAIN + CONTACT COMPLETION
+# V76'daki iki acigi kapatir:
+# 1) Google/Bing'de kolay bulunan resmi siteleri "Bulunamadi" gecme.
+# 2) Dogru sitede mail/telefon bulunamazsa resmi site + arama snippet +
+#    guvenli ucuncu kaynaklardan, domain/firma uyumu olan iletisimleri tamamla.
+# ============================================================
+
+V76_FIRMA_WEBSITE_BUL = firma_websitesi_bul
+V76_WEBSITE_ILETISIM_BUL = websitesinden_iletisim_bul
+
+
+def v77_candidate_roots(firma_adi):
+    profile = v74_company_profile(firma_adi)
+    tokens = profile["tokens"]
+    brand_tokens = profile["brand_tokens"] or tokens[:1]
+    groups = v74_expected_groups(firma_adi)
+    roots = []
+
+    def add(x):
+        x = normalize_domain_token(x)
+        if x and len(x) >= 3 and x not in roots:
+            roots.append(x)
+
+    if brand_tokens:
+        add(brand_tokens[0])
+    if len(brand_tokens) >= 2:
+        add(brand_tokens[0] + brand_tokens[1])
+        add(brand_tokens[0] + "-" + brand_tokens[1])
+
+    if tokens:
+        add("".join(tokens[:2]))
+        if len(tokens) >= 3:
+            add("".join(tokens[:3]))
+
+    if "shipyard" in groups:
+        bases = []
+        if brand_tokens:
+            bases.append(brand_tokens[0])
+        if len(brand_tokens) >= 2:
+            bases.append(brand_tokens[0] + brand_tokens[1])
+            bases.append(brand_tokens[0] + "-" + brand_tokens[1])
+        for b in bases:
+            add(b + "shipyard")
+            add(b + "-shipyard")
+            add(b + "shipyards")
+        # Shipyard firmalarinda dogru site bazen sadece marka domainidir: cemre.com.tr, sanmar.com.tr.
+        for b in bases:
+            add(b)
+
+    if "marine" in groups:
+        bases = []
+        if brand_tokens:
+            bases.append(brand_tokens[0])
+        if len(brand_tokens) >= 2:
+            bases.append(brand_tokens[0] + brand_tokens[1])
+            bases.append(brand_tokens[0] + "-" + brand_tokens[1])
+        for b in bases:
+            add(b + "marine")
+            add(b + "-marine")
+        for b in bases:
+            add(b)
+
+    if "classification" in groups or "loydu" in tokens:
+        add("turkloydu")
+        add("turk-loydu")
+
+    return roots[:40]
+
+
+def v77_priority_domain_candidates(firma_adi):
+    roots = v77_candidate_roots(firma_adi)
+    tlds = [".com.tr", ".com", ".org", ".net", ".tr"]
+    paths = ["", "/", "/tr", "/tr/", "/en", "/en/"]
+    adaylar = []
+
+    for r in roots:
+        for tld in tlds:
+            for host in [f"https://www.{r}{tld}", f"https://{r}{tld}"]:
+                for path in paths:
+                    adaylar.append(host + path)
+
+    return list(dict.fromkeys(adaylar))[:180]
+
+
+def v77_official_candidate_score(url, firma_adi, text=""):
+    root = v72_domain_root(url)
+    profile = v74_company_profile(firma_adi)
+    tokens = profile["tokens"]
+    brand_tokens = profile["brand_tokens"] or tokens[:1]
+    groups = v74_expected_groups(firma_adi)
+    low_text = turkce_karakter_temizle(str(text or "").lower()[:30000])
+
+    if not root or not tokens:
+        return -100
+
+    score = 0
+    root_flat = root.replace("-", "")
+    brand_join = "".join(brand_tokens[:2])
+    token_join2 = "".join(tokens[:2])
+    token_join3 = "".join(tokens[:3])
+
+    if brand_tokens and brand_tokens[0] in root_flat:
+        score += 38
+    if len(brand_tokens) >= 2 and all(t in root_flat for t in brand_tokens[:2]):
+        score += 70
+    if len(brand_join) >= 6 and brand_join in root_flat:
+        score += 80
+    if len(token_join2) >= 6 and token_join2 in root_flat:
+        score += 85
+    if len(token_join3) >= 8 and token_join3 in root_flat:
+        score += 90
+
+    for group in groups:
+        cfg = V74_SECTOR_GROUPS[group]
+        if any(r in root_flat for r in cfg["roots"]):
+            score += 55
+        if low_text and v74_text_has_any(low_text, cfg["needles"]):
+            score += 45
+        if low_text and v74_text_has_any(low_text, cfg["negative"]):
+            score -= 95
+
+    if domain_al(url).endswith(".com.tr"):
+        score += 14
+    elif domain_al(url).endswith(".com"):
+        score += 7
+    elif domain_al(url).endswith(".org") and ("loydu" in tokens or "classification" in groups):
+        score += 18
+
+    # Brand-only domain, sector firmada ancak sayfa metni sektoru dogrularsa yuksek olsun.
+    if groups and brand_tokens and root_flat == brand_tokens[0]:
+        if low_text and any(v74_text_has_any(low_text, V74_SECTOR_GROUPS[g]["needles"]) for g in groups):
+            score += 30
+        else:
+            score -= 35
+
+    return score
+
+
+def v77_active_site_score(url, firma_adi):
+    try:
+        r = guvenli_get(url, timeout=v73_mode_limits()["site_timeout"], referer="https://www.google.com/")
+        final_url = getattr(r, "url", url) or url
+        text = ""
+        if r.status_code < 500:
+            text = temiz_metin(r.text or "")
+        score = v77_official_candidate_score(final_url, firma_adi, text)
+        if r.status_code < 400:
+            score += 20
+        elif r.status_code in [401, 403]:
+            score += 5
+        return {"url": final_url, "score": score, "text": text}
+    except Exception:
+        # Site timeout verse bile domain cok kuvvetliyse tamamen atma.
+        return {"url": url, "score": v77_official_candidate_score(url, firma_adi, ""), "text": ""}
+
+
+def v77_direct_official_site_bul(firma_adi):
+    scored = []
+    for url in v77_priority_domain_candidates(firma_adi)[:80]:
+        root = v72_domain_root(url)
+        # Brand-only generic domainleri once ele; aksi halde ada.com.tr gibi yanlislar doner.
+        if root in V74_GENERIC_ROOTS and v74_expected_groups(firma_adi):
+            continue
+        s = v77_active_site_score(url, firma_adi)
+        if s["score"] >= (70 if v74_expected_groups(firma_adi) else 42):
+            scored.append(s)
+        if len(scored) >= 4:
+            break
+
+    if scored:
+        scored = sorted(scored, key=lambda x: x["score"], reverse=True)
+        return scored[0]["url"]
+    return ""
+
+
+def firma_websitesi_bul(firma_adi):
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v77:" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    # Once deterministik resmi domainleri dene. Bu kisim Tersan/Cemre/RMK/Med/Yonca gibi
+    # Google'da kolay bulunan ama skor yuzunden kacabilen firmalari toparlar.
+    direct = v77_direct_official_site_bul(firma_adi_temiz)
+    if direct:
+        WEBSITE_CACHE[cache_key] = direct
+        return direct
+
+    web = V76_FIRMA_WEBSITE_BUL(firma_adi_temiz)
+    if web:
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    # Son care: arama sonuclari icinden resmi domain puanlamasi.
+    queries = [
+        f'"{firma_adi_temiz}" official website',
+        f'"{firma_adi_temiz}" website',
+        f'"{firma_adi_temiz}" contact',
+        f'{firma_adi_temiz} resmi web sitesi',
+        f'{firma_adi_temiz} iletişim',
+    ]
+    scored = []
+    for q in queries[:5]:
+        for item in v76_search_result_items(q, limit=12):
+            url = normalize_url(item.get("url", ""))
+            if not url or v72_url_kotu_mu(url):
+                continue
+            score = v77_official_candidate_score(url, firma_adi_temiz, item.get("text", ""))
+            score += v76_result_text_supports_company(item, firma_adi_temiz)
+            if score >= (60 if v74_expected_groups(firma_adi_temiz) else 35):
+                scored.append({"url": url, "score": score})
+
+    if scored:
+        scored = sorted(scored, key=lambda x: x["score"], reverse=True)
+        WEBSITE_CACHE[cache_key] = scored[0]["url"]
+        return scored[0]["url"]
+
+    WEBSITE_CACHE[cache_key] = ""
+    return ""
+
+
+def v77_contact_search_queries(web_url, firma_adi):
+    domain = domain_al(web_url).replace("www.", "")
+    root = v72_domain_root(domain)
+    firma = firma_adi_temizle(firma_adi)
+    queries = [
+        f'site:{domain} contact email phone',
+        f'site:{domain} iletişim telefon e-posta',
+        f'site:{domain} "{firma}"',
+        f'"{firma}" "{domain}" email phone',
+        f'"{firma}" "{domain}" iletişim',
+        f'"{firma}" e-posta telefon',
+        f'"{firma}" iletişim bilgileri',
+        f'"{firma}" contact details',
+        f'"{firma}" email',
+        f'"{firma}" phone',
+    ]
+    if root:
+        queries.extend([
+            f'"{root}" email phone',
+            f'"{root}" iletişim telefon',
+        ])
+    return list(dict.fromkeys(queries))
+
+
+def v77_search_contact_fallback(web_url, firma_adi):
+    mailler = []
+    telefonlar = []
+    contact_links = []
+    web_root = v72_domain_root(web_url)
+    profile = v74_company_profile(firma_adi)
+    marka = profile.get("marka", "")
+
+    for q in v77_contact_search_queries(web_url, firma_adi)[:10]:
+        for item in v76_search_result_items(q, limit=14):
+            url = normalize_url(item.get("url", ""))
+            text = item.get("text", "")
+            blob = text + " " + url
+
+            m, t = v75_extract_contacts_from_blob(blob)
+            for mail in m:
+                try:
+                    mail_root = v72_domain_root(mail.split("@", 1)[1])
+                except Exception:
+                    mail_root = ""
+                if (
+                    v74_mail_site_uyumu(mail, web_url, firma_adi)
+                    or (web_root and mail_root and (web_root == mail_root or web_root in mail_root or mail_root in web_root))
+                    or (marka and (marka in mail_root or marka in mail.split("@", 1)[0]))
+                ):
+                    mailler.append(mail)
+
+            # Telefon icin firma/sayfa metninde marka veya domain gecmesi yeterli.
+            low_blob = turkce_karakter_temizle(blob.lower())
+            if marka and (marka in low_blob or web_root in low_blob):
+                telefonlar.extend(t)
+
+            if url and v72_same_site(url, web_url):
+                low_url = turkce_karakter_temizle(url.lower())
+                if any(w in low_url for w in list(V72_CONTACT_WORDS) + ["person", "people", "purchasing", "sales", "locations", "offices", "public/contact"]):
+                    contact_links.append(url)
+
+    for u in list(dict.fromkeys(contact_links))[:8]:
+        data = sayfa_deep_contact_oku(u, referer=web_url)
+        if data.get("mailler"):
+            for mail in data["mailler"]:
+                if v74_mail_site_uyumu(mail, web_url, firma_adi):
+                    mailler.append(mail)
+        if data.get("telefonlar"):
+            telefonlar.extend(data["telefonlar"])
+
+    return {
+        "mailler": temiz_mail_listesi(mailler),
+        "telefonlar": temiz_telefon_listesi(telefonlar),
+        "links": list(dict.fromkeys(contact_links)),
+    }
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    sonuc = V76_WEBSITE_ILETISIM_BUL(web_url, firma_adi=firma_adi)
+
+    mevcut_mail = [] if sonuc.get("eposta") in ["", None, "Bulunamadi"] else temiz_mail_listesi(str(sonuc.get("eposta", "")).split(","))
+    mevcut_tel = [] if sonuc.get("telefon") in ["", None, "Bulunamadi"] else temiz_telefon_listesi(str(sonuc.get("telefon", "")).split(","))
+
+    if mevcut_mail and mevcut_tel:
+        sonuc["durum"] = str(sonuc.get("durum", "")).replace("V76", "V77")
+        return sonuc
+
+    fb = v77_search_contact_fallback(web_url, firma_adi)
+    mailler = temiz_mail_listesi(mevcut_mail + fb.get("mailler", []))
+    telefonlar = temiz_telefon_listesi(mevcut_tel + fb.get("telefonlar", []))
+
+    if mailler:
+        sonuc["eposta"] = ", ".join(mailler[:5])
+    if telefonlar:
+        sonuc["telefon"] = ", ".join(telefonlar[:5])
+    if fb.get("links"):
+        sonuc["kaynak"] = fb["links"][0]
+
+    if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Tamamlandi | V77 contact completion"
+    elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Kismi tamamlandi | V77 contact completion"
+    else:
+        sonuc["durum"] = "Web bulundu, iletisim bulunamadi | V77 contact completion"
+
+    return sonuc
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+
+    try:
+        time.sleep(random.uniform(0.5, 1.1))
+        web = firma_websitesi_bul(firma_adi)
+
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V77 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
