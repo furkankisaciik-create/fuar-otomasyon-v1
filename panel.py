@@ -8932,6 +8932,389 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
+# V82 FALSE-DOMAIN GUARD + CLEAN SECTOR ROOTS
+# V81 testinde gorulen hata: sektor kelimesi zaten kokte varken tekrar
+# ekleniyordu: dearsanshipyardshipyard, medmarinemarine vb. V82 bunu
+# engeller ve DNS/404 veren domainleri resmi site diye kabul etmez.
+# ============================================================
+
+V81_FIRMA_WEBSITE_BUL_FINAL = firma_websitesi_bul
+V81_WEBSITE_ILETISIM_BUL_FINAL = websitesinden_iletisim_bul
+
+
+def temiz_telefon_listesi(telefonlar):
+    final = []
+    seen_digits = set()
+
+    for tel in telefonlar or []:
+        tel_raw = html_entity_temizle(str(tel or "")).strip()
+        if not tel_raw or re.search(r"\d+\.\d+", tel_raw):
+            continue
+
+        tel_clean = re.sub(r"\s+", " ", tel_raw.replace("tel:", "")).strip()
+        digits = re.sub(r"\D", "", tel_clean)
+
+        if len(digits) < 10 or len(digits) > 15:
+            continue
+        if len(set(digits)) <= 2 or re.search(r"(\d)\1{5,}", digits):
+            continue
+
+        if digits.startswith("90") and len(digits) == 12:
+            area = digits[2:5]
+            if area[0] not in "23458":
+                continue
+            norm = "+90 " + digits[2:5] + " " + digits[5:8] + " " + digits[8:10] + " " + digits[10:12]
+        elif digits.startswith("0") and len(digits) == 11:
+            area = digits[1:4]
+            if area[0] not in "23458":
+                continue
+            norm = "+90 " + digits[1:4] + " " + digits[4:7] + " " + digits[7:9] + " " + digits[9:11]
+        elif len(digits) == 10 and digits[0] in "23458":
+            norm = "+90 " + digits[0:3] + " " + digits[3:6] + " " + digits[6:8] + " " + digits[8:10]
+        elif digits.startswith("00") and len(digits) >= 12:
+            norm = "+" + digits[2:]
+        else:
+            norm = tel_clean
+
+        key = re.sub(r"\D", "", norm)[-10:]
+        if key in seen_digits:
+            continue
+        seen_digits.add(key)
+        final.append(norm)
+
+    return final[:6]
+
+
+def v82_sector_base_variants(profile):
+    tokens = profile.get("tokens", [])
+    brand_tokens = profile.get("brand_tokens", []) or tokens[:1]
+    variants = []
+
+    def add(x):
+        x = normalize_domain_token(str(x or "")).strip("-")
+        if x and len(x) >= 2 and x not in variants:
+            variants.append(x)
+
+    if brand_tokens:
+        add(brand_tokens[0])
+    if len(brand_tokens) >= 2:
+        add(brand_tokens[0] + brand_tokens[1])
+        add(brand_tokens[0] + "-" + brand_tokens[1])
+
+    # token2 bazen tktuzla gibi markanin parcasi, bazen de dearsanshipyard
+    # gibi zaten sektor eklenmis haldir. Sektorle bitiyorsa tekrar suffix alma.
+    if len(tokens) >= 2:
+        token2 = tokens[0] + tokens[1]
+        if not re.search(r"(shipyard|shipyards|marine|maritime|holding|loydu|class)$", token2):
+            add(token2)
+
+    return variants
+
+
+def v82_add_root(weighted, root, weight):
+    root = normalize_domain_token(str(root or "")).strip("-")
+    if not root or len(root) < 3:
+        return
+    # Bariz cift sektor eklerini tamamen ele.
+    if re.search(r"(shipyardshipyard|shipyardshipyards|shipyardmarine|marinemarine|holdingholding|shipyardholding)$", root):
+        return
+    if root not in weighted or weight > weighted[root]:
+        weighted[root] = weight
+
+
+def v82_priority_roots(firma_adi):
+    profile = v74_company_profile(firma_adi)
+    tokens = profile.get("tokens", [])
+    brand_tokens = profile.get("brand_tokens", []) or tokens[:1]
+    groups = v74_expected_groups(firma_adi)
+    bases = v82_sector_base_variants(profile)
+    weighted = {}
+
+    if "shipyard" in groups:
+        for b in bases:
+            v82_add_root(weighted, b + "shipyard", 190)
+            v82_add_root(weighted, b + "-shipyard", 188)
+            v82_add_root(weighted, b + "shipyards", 182)
+            v82_add_root(weighted, b + "-shipyards", 180)
+        for b in bases:
+            # Sanmar, Tersan, Ceksan gibi dogru site yalniz marka domaini olabilir.
+            v82_add_root(weighted, b, 150 if b not in V74_GENERIC_ROOTS else 55)
+
+    if "marine" in groups:
+        for b in bases:
+            v82_add_root(weighted, b + "marine", 188)
+            v82_add_root(weighted, b + "-marine", 186)
+            v82_add_root(weighted, b + "maritime", 160)
+            v82_add_root(weighted, b + "yachts", 154)
+            v82_add_root(weighted, b + "yacht", 150)
+        for b in bases:
+            v82_add_root(weighted, b, 135 if b not in V74_GENERIC_ROOTS else 45)
+
+    if "holding" in groups:
+        b = brand_tokens[0] if brand_tokens else (tokens[0] if tokens else "")
+        v82_add_root(weighted, b + "holding", 195)
+        v82_add_root(weighted, b + "-holding", 190)
+        v82_add_root(weighted, b + "group", 150)
+        v82_add_root(weighted, b, 70)
+
+    if "classification" in groups or "loydu" in tokens:
+        v82_add_root(weighted, "turkloydu", 200)
+        v82_add_root(weighted, "turk-loydu", 195)
+
+    if len(tokens) >= 3:
+        v82_add_root(weighted, "".join(tokens[:3]), 155)
+    if len(tokens) >= 2:
+        v82_add_root(weighted, "".join(tokens[:2]), 145)
+    for b in bases:
+        v82_add_root(weighted, b, 120 if b not in V74_GENERIC_ROOTS else 40)
+
+    return [r for r, _ in sorted(weighted.items(), key=lambda x: x[1], reverse=True)]
+
+
+def v82_priority_domain_candidates(firma_adi):
+    roots = v82_priority_roots(firma_adi)
+    tlds = [".com", ".com.tr", ".org", ".net", ".tr", ".global"]
+    paths = ["", "/", "/tr", "/tr/", "/en", "/en/"]
+    adaylar = []
+    for root in roots:
+        for tld in tlds:
+            for host in [f"https://www.{root}{tld}", f"https://{root}{tld}"]:
+                for path in paths:
+                    adaylar.append(host + path)
+    return list(dict.fromkeys(adaylar))[:260]
+
+
+def v82_official_score(url, firma_adi, text=""):
+    if not url or v72_url_kotu_mu(url) or v81_is_bad_result_url(url):
+        return -120
+    root = v72_domain_root(url)
+    root_flat = root.replace("-", "")
+    roots = v82_priority_roots(firma_adi)
+    score = v77_official_candidate_score(url, firma_adi, text)
+    low_text = turkce_karakter_temizle(str(text or "").lower()[:30000])
+
+    for idx, r in enumerate(roots[:14]):
+        rf = r.replace("-", "")
+        if root_flat == rf:
+            score += 105 - min(idx * 4, 40)
+            break
+        if len(rf) >= 6 and (rf in root_flat or root_flat in rf):
+            score += 65 - min(idx * 3, 28)
+            break
+
+    for group in v74_expected_groups(firma_adi):
+        cfg = V74_SECTOR_GROUPS[group]
+        if v74_text_has_any(low_text, cfg["needles"]):
+            score += 35
+        if v74_text_has_any(low_text, cfg["negative"]):
+            score -= 95
+
+    return score
+
+
+def v82_active_site_score(url, firma_adi):
+    try:
+        r = guvenli_get(url, timeout=min(v73_mode_limits()["site_timeout"], 6), referer="https://www.google.com/")
+        final_url = normalize_url(getattr(r, "url", url) or url)
+        status = int(getattr(r, "status_code", 0) or 0)
+        text = temiz_metin((r.text or "")[:22000]) if status < 400 else ""
+        alive = status < 400 or status in [401, 403]
+        score = v82_official_score(final_url, firma_adi, text)
+        if alive:
+            score += 25
+        if status == 404:
+            score -= 120
+        return {"url": final_url, "score": score, "alive": alive, "status": status, "text": text}
+    except Exception:
+        return {"url": url, "score": -120, "alive": False, "status": 0, "text": ""}
+
+
+def v82_direct_official_site_bul(firma_adi):
+    scored = []
+    seen = set()
+    attempts = 0
+    for url in v82_priority_domain_candidates(firma_adi):
+        if url in seen:
+            continue
+        seen.add(url)
+        root = v72_domain_root(url)
+        if root in V74_GENERIC_ROOTS and v74_expected_groups(firma_adi):
+            continue
+        attempts += 1
+        if attempts > (140 if SCAN_MODE != "Hızlı Tarama" else 70):
+            break
+
+        s = v82_active_site_score(url, firma_adi)
+        threshold = 118 if v74_expected_groups(firma_adi) else 70
+        if s["alive"] and s["score"] >= threshold:
+            scored.append(s)
+        if len(scored) >= 4:
+            break
+
+    if scored:
+        scored = sorted(scored, key=lambda x: x["score"], reverse=True)
+        return v81_site_home_from_url(scored[0]["url"])
+    return ""
+
+
+def v82_search_official_site_bul(firma_adi):
+    firma = firma_adi_temizle(firma_adi)
+    groups = v74_expected_groups(firma)
+    roots = v82_priority_roots(firma)[:8]
+    queries = [
+        f'"{firma}" official website',
+        f'"{firma}" contact',
+        f'"{firma}" iletişim',
+        f'{firma} resmi web sitesi',
+    ]
+    if groups:
+        queries.extend([
+            f'"{firma}" {" ".join(groups)} contact',
+            f'{firma} {" ".join(groups)} official website',
+        ])
+    for root in roots[:5]:
+        queries.append(f'"{firma}" "{root}"')
+
+    scored = []
+    for q in list(dict.fromkeys(queries))[:10]:
+        try:
+            items = v76_search_result_items(q, limit=12)
+        except Exception:
+            items = []
+        for item in items:
+            url = normalize_url(item.get("url", ""))
+            if not url or v81_is_bad_result_url(url):
+                continue
+            score = v82_official_score(url, firma, item.get("text", ""))
+            if score >= (100 if groups else 58):
+                scored.append({"url": v81_site_home_from_url(url), "score": score})
+
+    if scored:
+        scored = sorted(scored, key=lambda x: x["score"], reverse=True)
+        return scored[0]["url"]
+    return ""
+
+
+def v82_web_reasonable(web_url, firma_adi):
+    if not web_url or v81_is_bad_result_url(web_url):
+        return False
+    root = v72_domain_root(web_url)
+    if root in V74_GENERIC_ROOTS and v74_expected_groups(firma_adi):
+        return False
+    if re.search(r"(shipyardshipyard|marinemarine|holdingholding)$", root.replace("-", "")):
+        return False
+    return v82_official_score(web_url, firma_adi, "") >= (50 if v74_expected_groups(firma_adi) else 22)
+
+
+def firma_websitesi_bul(firma_adi):
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v82:" + SCAN_MODE + ":" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    direct = v82_direct_official_site_bul(firma_adi_temiz)
+    if direct:
+        WEBSITE_CACHE[cache_key] = direct
+        return direct
+
+    searched = v82_search_official_site_bul(firma_adi_temiz)
+    if searched:
+        WEBSITE_CACHE[cache_key] = searched
+        return searched
+
+    try:
+        previous = V81_FIRMA_WEBSITE_BUL_FINAL(firma_adi_temiz)
+    except Exception:
+        previous = ""
+
+    if previous and v82_web_reasonable(previous, firma_adi_temiz):
+        WEBSITE_CACHE[cache_key] = previous
+        return previous
+
+    WEBSITE_CACHE[cache_key] = ""
+    return ""
+
+
+def v82_search_contact_completion(web_url, firma_adi):
+    data = v81_search_contact_completion(web_url, firma_adi)
+    # V81'in arama contact mantigini kullan, ama V82 telefon temizleyici ile son kez filtrele.
+    return {
+        "mailler": v79_filter_mails(data.get("mailler", []), web_url, firma_adi),
+        "telefonlar": temiz_telefon_listesi(data.get("telefonlar", [])),
+        "links": data.get("links", []),
+    }
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    sonuc = V81_WEBSITE_ILETISIM_BUL_FINAL(web_url, firma_adi=firma_adi)
+    if sonuc.get("telefon") not in ["", None, "Bulunamadi"]:
+        tel = temiz_telefon_listesi(str(sonuc.get("telefon", "")).split(","))
+        sonuc["telefon"] = ", ".join(tel[:5]) if tel else "Bulunamadi"
+
+    if sonuc.get("eposta") != "Bulunamadi" and sonuc.get("telefon") != "Bulunamadi":
+        sonuc["durum"] = str(sonuc.get("durum", "")).replace("V81", "V82")
+        return sonuc
+
+    # Eksik kalanlarda V82 contact search tekrar temizlenmis sekilde devreye girsin.
+    extra = v82_search_contact_completion(web_url, firma_adi)
+    mailler = []
+    telefonlar = []
+    if sonuc.get("eposta") not in ["", None, "Bulunamadi"]:
+        mailler.extend(str(sonuc.get("eposta", "")).split(","))
+    if sonuc.get("telefon") not in ["", None, "Bulunamadi"]:
+        telefonlar.extend(str(sonuc.get("telefon", "")).split(","))
+    mailler.extend(extra.get("mailler", []))
+    telefonlar.extend(extra.get("telefonlar", []))
+
+    fm = v79_filter_mails(mailler, web_url, firma_adi)
+    ft = temiz_telefon_listesi(telefonlar)
+    if fm:
+        sonuc["eposta"] = ", ".join(fm[:5])
+    if ft:
+        sonuc["telefon"] = ", ".join(ft[:5])
+    if extra.get("links") and not sonuc.get("kaynak"):
+        sonuc["kaynak"] = extra["links"][0]
+
+    if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Tamamlandi | V82 false-domain guarded contact"
+    elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Kismi tamamlandi | V82 false-domain guarded contact"
+    else:
+        sonuc["durum"] = "Web bulundu, iletisim bulunamadi | V82 false-domain guarded contact"
+    return sonuc
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+    try:
+        time.sleep(random.uniform(0.3, 0.75))
+        web = firma_websitesi_bul(firma_adi)
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V82 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
