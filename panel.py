@@ -10042,6 +10042,720 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
+# V85 FULL-NAME INTENT GUARD
+# Sorun: "Elkon Electric" gibi cok kelimeli firmalarda yalnizca
+# ilk marka kelimesi gecen alakasiz domainler kabul ediliyordu.
+# V85, ikinci/ayirt edici kelime domain, arama snippet'i veya
+# sayfa metni tarafindan desteklenmeden tek kelime domaini kabul etmez.
+# ============================================================
+
+V84_FIRMA_WEBSITE_BUL_FINAL = firma_websitesi_bul
+V84_WEBSITE_ILETISIM_BUL_FINAL = websitesinden_iletisim_bul
+
+V85_QUALIFIER_SYNONYMS = {
+    "electric": ["electric", "electrical", "elektrik", "elektroteknik", "power", "energy", "automation", "otomasyon"],
+    "electrical": ["electric", "electrical", "elektrik", "elektroteknik", "power", "energy", "automation", "otomasyon"],
+    "elektrik": ["electric", "electrical", "elektrik", "elektroteknik", "power", "energy", "automation", "otomasyon"],
+    "automation": ["automation", "otomasyon", "control", "system integration", "systems integrator", "scada"],
+    "otomasyon": ["automation", "otomasyon", "control", "system integration", "systems integrator", "scada"],
+    "marine": ["marine", "maritime", "ship", "vessel", "denizcilik"],
+    "shipyard": ["shipyard", "shipyards", "shipbuilding", "ship repair", "tersane", "gemi"],
+    "shipyards": ["shipyard", "shipyards", "shipbuilding", "ship repair", "tersane", "gemi"],
+    "holding": ["holding", "group", "investment", "energy"],
+}
+
+
+def v85_company_tokens(firma_adi):
+    return v74_company_profile(firma_adi).get("tokens", [])
+
+
+def v85_phrase_variants(firma_adi):
+    clean = firma_adi_temizle(firma_adi)
+    tokens = v85_company_tokens(clean)
+    variants = [clean.lower()]
+    if tokens:
+        variants.append(" ".join(tokens))
+        variants.append("".join(tokens[:2]))
+        variants.append("-".join(tokens[:2]))
+    return [turkce_karakter_temizle(v.lower()) for v in variants if v and len(v) >= 3]
+
+
+def v85_qualifier_words(firma_adi):
+    tokens = v85_company_tokens(firma_adi)
+    if len(tokens) <= 1:
+        return []
+    # İlk kelime ana marka; geri kalan kelimeler ayirt edici sinyaldir.
+    qualifiers = []
+    for t in tokens[1:6]:
+        if t not in qualifiers:
+            qualifiers.append(t)
+        for syn in V85_QUALIFIER_SYNONYMS.get(t, []):
+            s = normalize_domain_token(syn)
+            if s and s not in qualifiers:
+                qualifiers.append(s)
+    return qualifiers
+
+
+def v85_text_has_qualifier(blob, firma_adi):
+    low = turkce_karakter_temizle(str(blob or "").lower())
+    compact = normalize_domain_token(low)
+    for q in v85_qualifier_words(firma_adi):
+        q_norm = normalize_domain_token(q)
+        if not q_norm:
+            continue
+        if q_norm in compact or q.lower() in low:
+            return True
+    return False
+
+
+def v85_full_name_supported(web_url, firma_adi, text=""):
+    tokens = v85_company_tokens(firma_adi)
+    if len(tokens) <= 1:
+        return True
+
+    root = v72_domain_root(web_url)
+    root_flat = root.replace("-", "")
+    url_blob = turkce_karakter_temizle(str(web_url or "").lower())
+    text_blob = turkce_karakter_temizle(str(text or "").lower())
+    combined = " ".join([url_blob, text_blob])
+
+    first = tokens[0]
+    second = tokens[1]
+    joined2 = first + second
+
+    if joined2 in root_flat or joined2 in normalize_domain_token(url_blob):
+        return True
+    if first in root_flat and second in root_flat:
+        return True
+    if any(v in combined for v in v85_phrase_variants(firma_adi)):
+        return True
+    if v85_text_has_qualifier(combined, firma_adi):
+        return True
+    return False
+
+
+def v85_web_plausible(web_url, firma_adi, text=""):
+    if not v84_web_plausible(web_url, firma_adi, text):
+        return False
+
+    tokens = v85_company_tokens(firma_adi)
+    if len(tokens) <= 1:
+        return True
+
+    root = v72_domain_root(web_url)
+    root_flat = root.replace("-", "")
+    first = tokens[0]
+
+    # Domain sadece ilk marka kelimesiyse ikinci kelime/saha niyeti mutlaka desteklenmeli.
+    if root_flat == first or root_flat.startswith(first) and len(root_flat) <= len(first) + 3:
+        if not text:
+            text = v84_fetch_short_text(web_url)
+        return v85_full_name_supported(web_url, firma_adi, text)
+
+    # Kisa benzer domainler icin de ayirt edici kelimeyi ara.
+    if first in root_flat and not v85_full_name_supported(web_url, firma_adi, text):
+        if not text:
+            text = v84_fetch_short_text(web_url)
+        return v85_full_name_supported(web_url, firma_adi, text)
+
+    return True
+
+
+def v85_extract_urls_from_text(text):
+    urls = []
+    for m in re.findall(r"https?://[^\s<>\)\"']+", str(text or ""), flags=re.I):
+        u = normalize_url(m.rstrip(".,;:"))
+        if url_gecerli_mi(u) and not v81_is_bad_result_url(u):
+            urls.append(v81_site_home_from_url(u))
+    return list(dict.fromkeys(urls))
+
+
+def v85_score_candidate(web_url, firma_adi, text="", source=""):
+    if not v85_web_plausible(web_url, firma_adi, text):
+        return -999
+    score = v82_official_score(web_url, firma_adi, text)
+    blob = turkce_karakter_temizle(" ".join([str(web_url or ""), str(text or ""), source]).lower())
+    if any(v in blob for v in v85_phrase_variants(firma_adi)):
+        score += 55
+    if v85_text_has_qualifier(blob, firma_adi):
+        score += 35
+    root = v72_domain_root(web_url)
+    tokens = v85_company_tokens(firma_adi)
+    if len(tokens) >= 2 and root.replace("-", "") == tokens[0] and not v85_text_has_qualifier(blob, firma_adi):
+        score -= 120
+    return score
+
+
+def v85_search_official_site_bul(firma_adi, seconds=22):
+    firma = firma_adi_temizle(firma_adi)
+    tokens = v85_company_tokens(firma)
+    queries = [
+        f'"{firma}" official website',
+        f'"{firma}" contact',
+        f'"{firma}" website',
+        f'"{firma}" email phone',
+        f'{firma} resmi web sitesi',
+    ]
+    if len(tokens) >= 2:
+        queries.extend([
+            f'"{tokens[0]} {tokens[1]}" official',
+            f'"{tokens[0]} {tokens[1]}" contact',
+            f'"{tokens[0]} {tokens[1]}" exhibitor',
+        ])
+
+    scored = []
+    deadline = time.time() + seconds
+    for q in list(dict.fromkeys(queries))[:6]:
+        if time.time() > deadline:
+            break
+        try:
+            items = v76_search_result_items(q, limit=10)
+        except Exception:
+            items = []
+        for item in items:
+            item_url = normalize_url(item.get("url", ""))
+            item_text = item.get("text", "")
+            candidates = []
+            if item_url and not v81_is_bad_result_url(item_url):
+                candidates.append(v81_site_home_from_url(item_url))
+            candidates.extend(v85_extract_urls_from_text(item_text))
+
+            for u in list(dict.fromkeys(candidates)):
+                s = v85_score_candidate(u, firma, item_text, source=q)
+                if s >= (80 if len(tokens) >= 2 else 45):
+                    scored.append({"url": u, "score": s, "text": item_text})
+
+    if scored:
+        scored = sorted(scored, key=lambda x: x["score"], reverse=True)
+        return scored[0]["url"]
+    return ""
+
+
+def v85_direct_name_domain_candidates(firma_adi):
+    tokens = v85_company_tokens(firma_adi)
+    if not tokens:
+        return []
+
+    first = tokens[0]
+    second = tokens[1] if len(tokens) >= 2 else ""
+    roots = []
+
+    def add(root):
+        root = str(root or "").strip("-")
+        if root and root not in roots:
+            roots.append(root)
+
+    if second:
+        add(first + second)
+        add(first + "-" + second)
+    add(first + "-tr")
+    add(first + "tr")
+    add(first)
+
+    tlds = [".com", ".com.tr", ".net", ".org", ".global"]
+    paths = ["/", "/tr", "/tr/", "/tr/iletisim", "/tr/iletisim/", "/contact", "/contact/"]
+
+    urls = []
+    for root in roots:
+        for tld in tlds:
+            for host in [f"https://www.{root}{tld}", f"https://{root}{tld}"]:
+                for path in paths:
+                    u = normalize_url(host + path)
+                    if u not in urls:
+                        urls.append(u)
+    return urls[:70]
+
+
+def v85_archive_best_result(firma_adi, require_complete=False):
+    try:
+        conn = db_baglan()
+        df = pd.read_sql_query(
+            """
+            SELECT firma_adi, web_adresi, telefon, eposta, kaynak, durum, hata,
+                   web_guven, mail_guven, telefon_guven, genel_guven,
+                   manuel_kontrol, sirket_tipi, ulke_tahmini, ulke_guven, tarih
+            FROM sonuclar
+            WHERE LOWER(TRIM(firma_adi)) = LOWER(TRIM(?))
+            ORDER BY id DESC
+            LIMIT 80
+            """,
+            conn,
+            params=(firma_adi,)
+        )
+        conn.close()
+    except Exception:
+        return None
+    if df.empty:
+        return None
+
+    best, best_score = None, -999
+    for _, row in df.iterrows():
+        res = {k: row.get(k, "") for k in df.columns}
+        res["firma_adi"] = firma_adi
+        web = res.get("web_adresi", "")
+        if not v84_has_value(web) or not v85_web_plausible(web, firma_adi):
+            continue
+        mails, tels = v84_contact_values_from_result(res)
+        if require_complete and not (mails and tels):
+            continue
+        score = v84_result_quality(res, firma_adi) + v85_score_candidate(web, firma_adi)
+        if score > best_score:
+            best_score = score
+            best = res
+    if best:
+        best["durum"] = "Arsivden V85 dogrulanmis kayit | " + str(best.get("durum", ""))
+    return best
+
+
+def v85_site_candidates_from_engines(firma_adi):
+    candidates = []
+
+    def add(web, source, text=""):
+        web = normalize_url(web)
+        if not web:
+            return
+        score = v85_score_candidate(web, firma_adi, text, source)
+        if score > -200:
+            candidates.append({"web": web, "source": source, "score": score})
+
+    try:
+        add(v85_search_official_site_bul(firma_adi, seconds=18), "v85_exact_search")
+    except Exception:
+        pass
+
+    # Elkon Electric -> elkon-tr.com gibi arama sonucunda kolay gorunen ama
+    # klasik firma+kategori domaininden farkli resmi yapilari yakala.
+    direct_deadline = time.time() + 18
+    for direct_url in v85_direct_name_domain_candidates(firma_adi):
+        if time.time() > direct_deadline:
+            break
+        try:
+            r = guvenli_get(direct_url, timeout=3, referer="https://www.google.com/")
+            status = int(getattr(r, "status_code", 0) or 0)
+            if status >= 500 or status == 404:
+                continue
+            final_url = normalize_url(getattr(r, "url", direct_url) or direct_url)
+            text = temiz_metin((r.text or "")[:18000]) if status < 400 else ""
+            add(final_url, "v85_direct_name", text)
+        except Exception:
+            continue
+
+    try:
+        add(V83_FIRMA_WEBSITE_BUL_FINAL(firma_adi), "v83")
+    except Exception:
+        pass
+
+    try:
+        add(v83_search_official_site_bul(firma_adi, time.time() + 12), "v83_search")
+    except Exception:
+        pass
+
+    try:
+        archive = v85_archive_best_result(firma_adi, require_complete=False)
+        if archive:
+            add(archive.get("web_adresi", ""), "archive")
+    except Exception:
+        pass
+
+    final, seen = [], set()
+    for item in sorted(candidates, key=lambda x: x["score"], reverse=True):
+        root = v72_domain_root(item["web"])
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        final.append(item)
+    return final[:4]
+
+
+def firma_websitesi_bul(firma_adi):
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v85:" + SCAN_MODE + ":" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    archive_complete = v85_archive_best_result(firma_adi_temiz, require_complete=True)
+    if archive_complete:
+        web = normalize_url(archive_complete.get("web_adresi", ""))
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    candidates = v85_site_candidates_from_engines(firma_adi_temiz)
+    if candidates:
+        web = normalize_url(candidates[0]["web"])
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    WEBSITE_CACHE[cache_key] = ""
+    return ""
+
+
+def v85_contact_from_engines(web_url, firma_adi):
+    result = V84_WEBSITE_ILETISIM_BUL_FINAL(web_url, firma_adi=firma_adi)
+    archive = v85_archive_best_result(firma_adi, require_complete=False)
+    if archive:
+        result = v84_merge_result(result, archive, firma_adi, reason="v85 arsiv hafizasi")
+    result["durum"] = str(result.get("durum", "")) + " | V85 full-name guard"
+    return result
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    if not web_url:
+        return {
+            "web_adresi": "Bulunamadi",
+            "telefon": "Bulunamadi",
+            "eposta": "Bulunamadi",
+            "kaynak": "",
+            "durum": "Web sitesi bulunamadi",
+            "hata": ""
+        }
+    return v85_contact_from_engines(normalize_url(web_url), firma_adi)
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = v84_base_result(firma_adi)
+    try:
+        time.sleep(random.uniform(0.08, 0.22))
+        archive_complete = v85_archive_best_result(firma_adi, require_complete=True)
+        if archive_complete:
+            archive_complete["firma_adi"] = firma_adi
+            return sonuc_guven_skorlari_ekle(archive_complete, firma_adi)
+
+        web = firma_websitesi_bul(firma_adi)
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V85 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
+# V86 SEARCH-RANK AUTHORITY
+# Ana prensip: Firma adi tirnak icinde arandiginda arama motorunun ilk
+# siralardaki sonucu en guclu sinyaldir. Domain tahmini, yalnizca bu
+# sinyal yoksa devreye girer. Google CSE/SerpAPI/Bing key varsa kullanir;
+# yoksa mevcut Bing/DDG HTML sonuc sirasi ile calisir.
+# ============================================================
+
+V85_FIRMA_WEBSITE_BUL_FINAL = firma_websitesi_bul
+V85_WEBSITE_ILETISIM_BUL_FINAL = websitesinden_iletisim_bul
+
+V86_DIRECTORY_HINTS = {
+    "exhibitor", "exhibitors", "booked-exhibitors", "katilimci", "katılımcı",
+    "fair", "fuar", "conference", "expo", "event", "directory", "firma-rehberi",
+    "isfirmarehberi", "yellow", "kompass", "europages", "shippax", "marinedeal"
+}
+
+
+def v86_secret(name, default=""):
+    try:
+        val = os.environ.get(name, "")
+        if val:
+            return val
+    except Exception:
+        pass
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        pass
+    return default
+
+
+def v86_context_terms():
+    ctx = turkce_karakter_temizle(str(globals().get("CURRENT_FUAR_ETIKETI", "") or "").lower())
+    terms = []
+    if any(x in ctx for x in ["smm", "ssm", "hamburg", "marin", "marine", "maritime", "ship", "deniz"]):
+        terms.extend(["marine", "maritime", "shipbuilding", "exhibitor"])
+    if any(x in ctx for x in ["beauty", "cosmetic", "kozmetik"]):
+        terms.extend(["cosmetic", "beauty", "exhibitor"])
+    return list(dict.fromkeys(terms))
+
+
+def v86_search_authority_limits():
+    mode = turkce_karakter_temizle(str(globals().get("SCAN_MODE", "") or "").lower())
+    if "hizli" in mode:
+        return {"seconds": 10, "queries": 4, "items": 5}
+    if "derin" in mode:
+        return {"seconds": 38, "queries": 9, "items": 10}
+    return {"seconds": 20, "queries": 6, "items": 8}
+
+
+def v86_google_cse_items(query, limit=8):
+    key = v86_secret("GOOGLE_CSE_API_KEY") or v86_secret("GOOGLE_API_KEY")
+    cx = v86_secret("GOOGLE_CSE_ID") or v86_secret("GOOGLE_CX") or v86_secret("GOOGLE_SEARCH_ENGINE_ID")
+    if not key or not cx:
+        return []
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": key, "cx": cx, "q": query, "num": min(max(int(limit), 1), 10)},
+            timeout=7,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code >= 400:
+            return []
+        data = r.json()
+        items = []
+        for idx, item in enumerate(data.get("items", [])[:limit], start=1):
+            link = normalize_url(item.get("link", ""))
+            if not link:
+                continue
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
+            items.append({
+                "url": link,
+                "title": title,
+                "text": temiz_metin(" ".join([title, snippet])),
+                "rank": idx,
+                "engine": "google_cse"
+            })
+        return items
+    except Exception as e:
+        logging.warning(f"V86 Google CSE arama hatasi: {query} - {str(e)}")
+        return []
+
+
+def v86_serpapi_items(query, limit=8):
+    key = v86_secret("SERPAPI_KEY")
+    if not key:
+        return []
+    try:
+        r = requests.get(
+            "https://serpapi.com/search.json",
+            params={"engine": "google", "q": query, "api_key": key, "num": min(max(int(limit), 1), 10)},
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code >= 400:
+            return []
+        data = r.json()
+        items = []
+        for idx, item in enumerate(data.get("organic_results", [])[:limit], start=1):
+            link = normalize_url(item.get("link", ""))
+            if not link:
+                continue
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
+            items.append({
+                "url": link,
+                "title": title,
+                "text": temiz_metin(" ".join([title, snippet])),
+                "rank": idx,
+                "engine": "serpapi_google"
+            })
+        return items
+    except Exception as e:
+        logging.warning(f"V86 SerpAPI arama hatasi: {query} - {str(e)}")
+        return []
+
+
+def v86_ranked_search_items(query, limit=8):
+    items = v86_google_cse_items(query, limit=limit)
+    if not items:
+        items = v86_serpapi_items(query, limit=limit)
+    if not items:
+        try:
+            fallback = v76_search_result_items(query, limit=limit)
+        except Exception:
+            fallback = []
+        items = []
+        for idx, item in enumerate(fallback[:limit], start=1):
+            items.append({
+                "url": normalize_url(item.get("url", "")),
+                "title": "",
+                "text": item.get("text", ""),
+                "rank": idx,
+                "engine": "bing_ddg"
+            })
+    return [x for x in items if x.get("url")]
+
+
+def v86_item_candidate_urls(item):
+    urls = []
+    primary = normalize_url(item.get("url", ""))
+    if primary and not v81_is_bad_result_url(primary):
+        urls.append(v81_site_home_from_url(primary))
+
+    # Arama sonucu bir fuar/dizin sayfasi olabilir; snippet icindeki resmi URL daha degerlidir.
+    blob = " ".join([item.get("title", ""), item.get("text", ""), item.get("url", "")])
+    urls.extend(v85_extract_urls_from_text(blob))
+
+    final = []
+    seen = set()
+    for u in urls:
+        u = normalize_url(u)
+        if not u or v81_is_bad_result_url(u):
+            continue
+        root = v72_domain_root(u)
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        final.append(u)
+    return final[:5]
+
+
+def v86_item_is_directory(item):
+    blob = turkce_karakter_temizle(" ".join([item.get("url", ""), item.get("title", ""), item.get("text", "")]).lower())
+    return any(x in blob for x in V86_DIRECTORY_HINTS)
+
+
+def v86_search_rank_candidate_score(url, item, firma_adi, query):
+    rank = int(item.get("rank", 9) or 9)
+    blob = turkce_karakter_temizle(" ".join([
+        str(url or ""),
+        item.get("url", ""),
+        item.get("title", ""),
+        item.get("text", ""),
+        query
+    ]).lower())
+    tokens = v85_company_tokens(firma_adi)
+
+    score = max(0, 165 - (rank - 1) * 22)
+
+    if any(v in blob for v in v85_phrase_variants(firma_adi)):
+        score += 95
+
+    if tokens:
+        token_hits = sum(1 for t in tokens[:5] if t in blob or normalize_domain_token(t) in normalize_domain_token(blob))
+        score += token_hits * 24
+
+    if len(tokens) >= 2:
+        if not v85_full_name_supported(url, firma_adi, item.get("text", "")):
+            score -= 170
+        else:
+            score += 70
+
+    if v85_text_has_qualifier(blob, firma_adi):
+        score += 45
+
+    if v86_item_is_directory(item) and url != v81_site_home_from_url(item.get("url", "")):
+        # Fuar/dizin sonucunun icindeki resmi URL'yi yakaladiysak iyi sinyal.
+        score += 45
+
+    if any(x in blob for x in ["official", "resmi", "website", "web site", "contact", "iletisim", "iletişim"]):
+        score += 20
+
+    if not v85_web_plausible(url, firma_adi, item.get("text", "")):
+        score -= 150
+
+    return score
+
+
+def v86_search_rank_authority_site_bul(firma_adi, seconds=28):
+    firma = firma_adi_temizle(firma_adi)
+    if not firma:
+        return ""
+
+    limits = v86_search_authority_limits()
+    tokens = v85_company_tokens(firma)
+    queries = [
+        f'"{firma}" official website',
+        f'"{firma}" contact',
+        f'"{firma}" website',
+        f'"{firma}"',
+    ]
+
+    for ctx in v86_context_terms():
+        queries.insert(0, f'"{firma}" {ctx} official website')
+        queries.insert(1, f'"{firma}" {ctx} contact')
+
+    if len(tokens) >= 2:
+        queries.extend([
+            f'"{tokens[0]} {tokens[1]}" official website',
+            f'"{tokens[0]} {tokens[1]}" contact',
+        ])
+
+    deadline = time.time() + seconds
+    scored = []
+    for q in list(dict.fromkeys(queries))[:limits["queries"]]:
+        if time.time() > deadline:
+            break
+        items = v86_ranked_search_items(q, limit=limits["items"])
+        for item in items:
+            for u in v86_item_candidate_urls(item):
+                s = v86_search_rank_candidate_score(u, item, firma, q)
+                if s >= (150 if len(tokens) >= 2 else 95):
+                    scored.append({"url": u, "score": s, "rank": item.get("rank", 9), "engine": item.get("engine", "")})
+
+    if not scored:
+        return ""
+
+    scored = sorted(scored, key=lambda x: (x["score"], -int(x.get("rank", 9))), reverse=True)
+    return v81_site_home_from_url(scored[0]["url"])
+
+
+def firma_websitesi_bul(firma_adi):
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v86:" + SCAN_MODE + ":" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    archive_complete = v85_archive_best_result(firma_adi_temiz, require_complete=True)
+    if archive_complete:
+        web = normalize_url(archive_complete.get("web_adresi", ""))
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    ranked = v86_search_rank_authority_site_bul(
+        firma_adi_temiz,
+        seconds=v86_search_authority_limits()["seconds"]
+    )
+    if ranked:
+        WEBSITE_CACHE[cache_key] = ranked
+        return ranked
+
+    try:
+        web = V85_FIRMA_WEBSITE_BUL_FINAL(firma_adi_temiz)
+    except Exception:
+        web = ""
+
+    if web and v85_web_plausible(web, firma_adi_temiz):
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    WEBSITE_CACHE[cache_key] = ""
+    return ""
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    return V85_WEBSITE_ILETISIM_BUL_FINAL(web_url, firma_adi=firma_adi)
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = v84_base_result(firma_adi)
+    try:
+        time.sleep(random.uniform(0.06, 0.18))
+        web = firma_websitesi_bul(firma_adi)
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V86 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
@@ -10066,6 +10780,7 @@ with st.sidebar:
         st.warning("Playwright pasif: Sadece statik HTML okunur.")
 
     fuar_etiketi = st.text_input("Fuar Etiketi", value="Genel_Liste")
+    globals()["CURRENT_FUAR_ETIKETI"] = fuar_etiketi
 
     tarama_modu = st.selectbox(
         "Tarama Modu",
