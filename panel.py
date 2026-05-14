@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.8"
+APP_TITLE = "Fuar Müşteri Otomasyonu V3.1"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.8
+            Fuar Müşteri Otomasyonu V3.1
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.8</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V3.1</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -2692,9 +2692,245 @@ def firma_adi_sadelestir(firma_adi):
     return marka_words
 
 
+
+# ============================================================
+# UNIVERSAL BRAND / DOMAIN INTELLIGENCE V3.1
+# ============================================================
+
+GENERIC_COMPANY_WORDS_FOR_DOMAIN = {
+    # Turkish legal/company words
+    "anonim", "limited", "sirket", "sirketi", "sanayi", "san", "ticaret", "tic",
+    "ltd", "sti", "şti", "as", "aş", "a", "s", "ve", "ile", "hizmet", "hizmetleri",
+    "endustri", "endustriyel", "endüstri", "endüstriyel",
+
+    # English legal/company words
+    "company", "co", "ltd", "limited", "inc", "llc", "corp", "corporation", "group",
+    "holding", "industry", "industries", "industrial", "international", "global",
+
+    # Sector/generic words that often do NOT appear in the official domain
+    "shipyard", "shipyards", "ship", "marine", "maritime", "denizcilik", "tersane",
+    "tersanesi", "gemi", "yacht", "yat", "boat", "boatyard",
+    "makina", "makine", "machine", "machinery", "teknoloji", "technology",
+    "software", "yazilim", "yazılım", "metal", "plastik", "plastic", "kimya",
+    "chemical", "chemicals", "gida", "gıda", "food", "ambalaj", "packaging",
+    "pompa", "pump", "pumps", "motor", "valve", "valves", "otomotiv", "automotive",
+    "elektrik", "electric", "electronics", "elektronik", "medikal", "medical",
+    "kozmetik", "cosmetic", "cosmetics", "tekstil", "textile", "insaat", "inşaat",
+    "construction", "energy", "enerji"
+}
+
+
+def normalize_domain_token(text):
+    t = turkce_karakter_temizle(str(text or "").lower())
+    t = re.sub(r"[^a-z0-9]", "", t)
+    return t
+
+
+def firma_domain_kelime_profili(firma_adi):
+    """
+    Firma adını marka kökü ve yardımcı kelimeler olarak ayırır.
+    Ana fikir:
+    - Resmi domain çoğu zaman ilk güçlü marka kelimesidir.
+    - Sektör/unvan kelimeleri domain içinde bulunmayabilir.
+    Örnek:
+    Sanmar Shipyards -> marka: sanmar
+    Sefine Shipyard -> marka: sefine
+    Çeksan -> marka: ceksan
+    ABBA Teknoloji Yazılım -> marka: abba, destek: teknoloji/yazilim
+    """
+    raw_words = firma_onemli_kelimeleri(firma_adi) if "firma_onemli_kelimeleri" in globals() else firma_adi_sadelestir(firma_adi)
+
+    marka_adaylari = []
+    destek_kelimeler = []
+    jenerik_kelimeler = []
+
+    for w in raw_words:
+        token = normalize_domain_token(w)
+        if not token or len(token) < 2:
+            continue
+
+        if token in GENERIC_COMPANY_WORDS_FOR_DOMAIN:
+            jenerik_kelimeler.append(token)
+        else:
+            marka_adaylari.append(token)
+
+    # Marka adayı yoksa ilk kelimeyi marka kabul et
+    if not marka_adaylari and raw_words:
+        token = normalize_domain_token(raw_words[0])
+        if token:
+            marka_adaylari.append(token)
+
+    marka = marka_adaylari[0] if marka_adaylari else ""
+
+    # Marka haricindeki ayırt edici kelimeler destek sinyali olur
+    destek_kelimeler = [x for x in marka_adaylari[1:5] if x != marka]
+
+    return {
+        "marka": marka,
+        "marka_adaylari": marka_adaylari[:5],
+        "destek_kelimeler": destek_kelimeler[:5],
+        "jenerik_kelimeler": jenerik_kelimeler[:8],
+        "tum_tokenlar": list(dict.fromkeys(marka_adaylari + destek_kelimeler + jenerik_kelimeler))
+    }
+
+
+def domain_root_al(url):
+    d = domain_al(url).lower().replace("www.", "")
+    d = re.sub(r"\.(com\.tr|net\.tr|org\.tr|com\.cn|co\.uk|co\.kr|com|net|org|tr|cn|de|it|fr|uk|us|in|jp|ru|pl|nl|be|bg|hu|pk|tw|ae|es|pt|io|co)$", "", d)
+    return normalize_domain_token(d)
+
+
+def universal_domain_match_score(url, firma_adi, page_text=""):
+    """
+    Evrensel domain doğrulama skoru.
+    Firmaya özel kural yazmaz. Marka-domain uyumu, destek kelimeler, sayfa içeriği ve TLD sinyallerini birlikte puanlar.
+    """
+    if not url or istenmeyen_link_mi(url):
+        return -100
+
+    domain = domain_al(url)
+    root = domain_root_al(url)
+    profile = firma_domain_kelime_profili(firma_adi)
+
+    marka = profile["marka"]
+    destek = profile["destek_kelimeler"]
+    jenerik = profile["jenerik_kelimeler"]
+    tum = profile["tum_tokenlar"]
+
+    text = turkce_karakter_temizle((page_text or "").lower()[:15000])
+    score = 0
+
+    if not root:
+        return -100
+
+    # 1) Marka kökü en güçlü sinyal
+    if marka:
+        if root == marka:
+            score += 85
+        elif marka in root or root in marka:
+            score += 68
+        elif len(marka) >= 5 and marka[:5] in root:
+            score += 38
+
+    # 2) Diğer marka adayları destek sinyali
+    for w in destek:
+        if w in root:
+            score += 28
+        if w in text:
+            score += 8
+
+    # 3) Jenerik sektör kelimeleri domain içinde olursa artı ama zorunlu değil
+    for w in jenerik:
+        if w in root:
+            score += 10
+        if w in text:
+            score += 5
+
+    # 4) Sayfa içeriğinde marka ve firma kelimeleri
+    if marka and marka in text:
+        score += 22
+
+    text_hit = 0
+    for w in tum[:8]:
+        if len(w) >= 3 and w in text:
+            text_hit += 1
+    if text_hit >= 2:
+        score += 18
+    elif text_hit == 1:
+        score += 7
+
+    # 5) Türkiye domain avantajı
+    if domain.endswith(".com.tr"):
+        score += 24
+    elif domain.endswith(".tr"):
+        score += 18
+    elif domain.endswith(".com"):
+        score += 8
+
+    # 6) Contact / iletişim sayfası sinyali
+    low_url = url.lower()
+    if any(x in low_url for x in ["iletisim", "iletişim", "contact", "home/contact", "kurumsal", "about"]):
+        score += 8
+
+    # 7) Tek marka çok genel ise daha dikkatli ol
+    risky_short = {"abc", "star", "mega", "global", "best", "pro", "max", "net", "sun", "blue", "red"}
+    if marka in risky_short and root == marka and text_hit == 0:
+        score -= 45
+
+    # 8) Domain kökü marka ile alakasızsa ceza
+    if marka and marka not in root and root not in marka:
+        # destek kelime de yoksa alakasız olabilir
+        if not any(w in root for w in destek):
+            score -= 28
+
+    return score
+
+
+def universal_direct_domain_candidates(firma_adi):
+    """
+    Firma adından firmaya özel olmayan direkt domain adayları üretir.
+    Önce marka kökü denenir, sonra marka+destek kombinasyonları.
+    """
+    profile = firma_domain_kelime_profili(firma_adi)
+    marka = profile["marka"]
+    destek = profile["destek_kelimeler"]
+
+    roots = []
+    if marka:
+        roots.append(marka)
+
+    for w in destek[:3]:
+        roots.append(marka + w)
+        roots.append(marka + "-" + w)
+
+    roots = [r for r in list(dict.fromkeys(roots)) if r and len(r) >= 3]
+
+    tlds = [
+        ".com.tr", ".tr", ".com", ".net.tr", ".net", ".org",
+        ".com.tr/iletisim", ".com.tr/contact", ".com.tr/en/contact",
+        ".com.tr/home/contact", ".com/iletisim", ".com/contact",
+        ".com/en/contact", ".com/home/contact"
+    ]
+
+    adaylar = []
+    for r in roots:
+        for tld in tlds:
+            adaylar.append(f"https://www.{r}{tld}")
+            adaylar.append(f"https://{r}{tld}")
+
+    return list(dict.fromkeys(adaylar))[:80]
+
+
+def universal_direct_domain_fallback_bul(firma_adi):
+    """
+    Arama motoru başarısız olursa direkt marka kökünden domainleri dener.
+    """
+    adaylar = universal_direct_domain_candidates(firma_adi)
+    scored = []
+
+    for aday in adaylar:
+        try:
+            sonuc = aday_site_oku_ve_puanla(aday, firma_adi)
+            puan = sonuc.get("puan", -100)
+            if puan >= 12:
+                scored.append(sonuc)
+        except Exception:
+            continue
+
+    if scored:
+        scored = sorted(scored, key=lambda x: x.get("puan", 0), reverse=True)
+        return scored[0]["url"]
+
+    return ""
+
+
+
 def firma_arama_sorgulari_uret(firma_adi):
     important_words = firma_onemli_kelimeleri(firma_adi)
     original = firma_adi_temizle(firma_adi)
+    profile = firma_domain_kelime_profili(firma_adi)
+    marka = profile["marka"]
+    destek = profile["destek_kelimeler"]
 
     sorgular = []
 
@@ -2703,31 +2939,41 @@ def firma_arama_sorgulari_uret(firma_adi):
             f'"{original}"',
             f'"{original}" iletişim',
             f'"{original}" resmi web sitesi',
+            f'"{original}" official website',
+            f'"{original}" contact',
+        ])
+
+    if marka:
+        sorgular.extend([
+            f'{marka} resmi web sitesi',
+            f'{marka} iletişim',
+            f'{marka} contact',
+            f'{marka} official website',
+            f'{marka} site:com.tr',
+            f'{marka}.com.tr'
         ])
 
     if important_words:
-        marka1 = important_words[0]
         marka2 = " ".join(important_words[:2])
         marka3 = " ".join(important_words[:3])
 
-        # Öncelik çok kelimeli sorgularda: ABBA TEKNOLOJI gibi
-        for q in [marka3, marka2, marka1]:
+        for q in [marka3, marka2]:
             if q:
                 sorgular.extend([
                     f'"{q}" resmi web sitesi',
                     f'"{q}" iletişim',
                     f'{q} site:com.tr',
                     f'{q} official website',
-                    f'{q} firma'
+                    f'{q} contact'
                 ])
 
-        # Domain kombinasyon sorgusu
-        if len(important_words) >= 2:
-            combo = important_words[0] + important_words[1]
+    for w in destek[:3]:
+        if marka and w:
+            combo = marka + " " + w
             sorgular.extend([
-                f'{combo}',
-                f'{combo} iletişim',
-                f'{combo} web sitesi'
+                f'"{combo}" official website',
+                f'"{combo}" contact',
+                f'{combo} site:com.tr'
             ])
 
     final = []
@@ -2738,49 +2984,53 @@ def firma_arama_sorgulari_uret(firma_adi):
             seen.add(k)
             final.append(q)
 
-    return final[:14]
+    return final[:20]
 
 
 def domain_adaylari_uret(firma_adi):
-    words = firma_onemli_kelimeleri(firma_adi)
-
-    aday_kokler = []
-
-    if words:
-        # En doğru adaylar: marka + ayırt edici ikinci kelime
-        if len(words) >= 2:
-            aday_kokler.append(words[0] + words[1])
-            aday_kokler.append(words[0] + "-" + words[1])
-        if len(words) >= 3:
-            aday_kokler.append(words[0] + words[1] + words[2])
-            aday_kokler.append(words[0] + "-" + words[1] + "-" + words[2])
-
-        # Sonra tek marka
-        aday_kokler.append(words[0])
-
-        # İlk kelime + diğer sektör/ayırt edici kelimeler
-        for w in words[1:5]:
-            aday_kokler.append(words[0] + w)
-            aday_kokler.append(words[0] + "-" + w)
-
-    clean_roots = []
-    seen = set()
-    for root in aday_kokler:
-        root = re.sub(r"[^a-z0-9-]", "", root)
-        if len(root) >= 3 and root not in seen:
-            seen.add(root)
-            clean_roots.append(root)
-
-    # Türkiye için com.tr önce, sonra com
-    tlds = [".com.tr", ".com", ".net", ".com.tr/iletisim", ".com/iletisim", ".com.tr/contact", ".com/contact"]
-
+    """
+    V3.1 evrensel domain aday motoru.
+    Önce kısa marka kökü denenir, sonra marka+destek kombinasyonları denenir.
+    """
     adaylar = []
-    for root in clean_roots:
+    adaylar.extend(universal_direct_domain_candidates(firma_adi))
+
+    words = firma_onemli_kelimeleri(firma_adi)
+    profile = firma_domain_kelime_profili(firma_adi)
+    marka = profile["marka"]
+    destek = profile["destek_kelimeler"]
+
+    kokler = []
+
+    if marka:
+        kokler.append(marka)
+
+    if len(words) >= 2:
+        w0 = normalize_domain_token(words[0])
+        w1 = normalize_domain_token(words[1])
+        if w0 and w1:
+            kokler.append(w0 + w1)
+            kokler.append(w0 + "-" + w1)
+
+    for w in destek[:4]:
+        kokler.append(marka + w)
+        kokler.append(marka + "-" + w)
+
+    kokler = [k for k in list(dict.fromkeys(kokler)) if k and len(k) >= 3]
+
+    tlds = [
+        ".com.tr", ".tr", ".com", ".net.tr", ".net", ".org",
+        ".com.tr/iletisim", ".com.tr/contact", ".com.tr/en/contact",
+        ".com.tr/home/contact", ".com/iletisim", ".com/contact",
+        ".com/en/contact", ".com/home/contact"
+    ]
+
+    for root in kokler:
         for tld in tlds:
             adaylar.append(f"https://www.{root}{tld}")
             adaylar.append(f"https://{root}{tld}")
 
-    return adaylar[:50]
+    return list(dict.fromkeys(adaylar))[:100]
 
 
 def web_sitesi_dogrula(url):
@@ -2988,57 +3238,36 @@ def domain_firma_eslesme_skoru(url, firma_adi, page_text=""):
 
 def domain_puanla(url, firma_adi, page_text=""):
     """
-    Aday web sitesini firma adına göre puanlar.
-    V5.4:
-    - Tek kelimelik marka yanılmalarını azaltır.
-    - ABBA -> abba.com yerine abbateknoloji.com gibi çok kelimeli eşleşmeleri öne çıkarır.
+    V3.1 Evrensel domain puanlama.
+    Kısa marka domainlerini yanlış elemez; sektör/unvan kelimelerini zorunlu saymaz.
+    Örnek mantık:
+    - Sanmar Shipyards -> sanmar.com.tr kabul edilebilir.
+    - Sefine Shipyard -> sefine.com.tr kabul edilebilir.
+    - Çeksan -> ceksan.com.tr kabul edilebilir.
+    Ama bu firmalara özel kural içermez.
     """
     try:
+        if not url or istenmeyen_link_mi(url):
+            return -100
+
         domain = domain_al(url)
         if not domain:
             return -100
 
-        low_domain = turkce_karakter_temizle(domain.lower())
-        low_text = turkce_karakter_temizle((page_text or "").lower()[:10000])
-        words = firma_onemli_kelimeleri(firma_adi)
+        puan = universal_domain_match_score(url, firma_adi, page_text)
 
-        puan = 0
+        # Rehber/haber/dizin sitelerini cezalandır
+        low_url = url.lower()
+        if any(x in low_url for x in ["haber", "news", "firma-rehberi", "yellow", "rehber", "directory", "blog", "linkedin.com", "facebook.com"]):
+            puan -= 35
 
-        if istenmeyen_link_mi(url):
-            return -100
+        # Boş/park domain sinyalleri
+        low_text = turkce_karakter_temizle((page_text or "").lower()[:12000])
+        if any(x in low_text for x in ["domain is for sale", "buy this domain", "parked domain", "this domain may be for sale"]):
+            puan -= 80
 
-        # Çok kelimeli firma-domain eşleşme skoru
-        puan += domain_firma_eslesme_skoru(url, firma_adi, page_text)
-
-        # Türkiye firmaları için com.tr güçlü sinyal
-        if domain.endswith(".com.tr"):
-            puan += 22
-        elif domain.endswith(".com"):
-            puan += 8
-        elif domain.endswith(".net") or domain.endswith(".org"):
-            puan += 4
-
-        # İletişim sayfası veya kurumsal sayfa pozitif
-        if any(x in url.lower() for x in ["iletisim", "iletişim", "contact", "kurumsal", "about"]):
-            puan += 8
-
-        # Domain içinde tek başına sadece ilk kelime varsa dikkatli ol
-        if len(words) >= 2:
-            root = low_domain.replace("www.", "")
-            root = re.sub(r"\.(com\.tr|com|net|org|tr|co|io|de|it|cn|uk)$", "", root)
-            if words[0] in root and not any(w in root for w in words[1:4]):
-                # Sayfa içeriği de ikinci kelimeyi desteklemiyorsa ciddi ceza
-                if not any(w in low_text for w in words[1:4]):
-                    puan -= 45
-
-        # Çok uzun, takip parametreli, haber/rehber gibi siteler negatif
-        if len(url) > 130:
-            puan -= 8
-        if any(x in url.lower() for x in ["haber", "news", "firma-rehberi", "yellow", "rehber", "directory", "blog"]):
-            puan -= 18
-
-        # Sayfa içinde iletişim sinyalleri
-        if any(x in low_text for x in ["iletisim", "iletişim", "contact", "e-posta", "email", "telefon"]):
+        # İletişim sinyalleri ek artı
+        if any(x in low_text for x in ["iletisim", "iletişim", "contact", "e-posta", "email", "telefon", "phone"]):
             puan += 10
 
         return puan
@@ -3303,6 +3532,11 @@ def firma_websitesi_bul(firma_adi):
         dogrulanan = sorted(dogrulanan, key=lambda x: x["puan"], reverse=True)
         return dogrulanan[0]["url"]
 
+    # Evrensel son çare: marka kökü direkt domain fallback
+    direkt = universal_direct_domain_fallback_bul(firma_adi_temiz)
+    if direkt:
+        return direkt
+
     return ""
 
 
@@ -3378,7 +3612,290 @@ def iletisim_sayfasi_linkleri_bul(base_url, html):
     return adaylar[:8]
 
 
+
+# ============================================================
+# DEEP CONTACT EXTRACTION V3.1
+# ============================================================
+
+def html_entity_temizle(text):
+    try:
+        import html as html_lib
+        return html_lib.unescape(str(text or ""))
+    except Exception:
+        return str(text or "")
+
+
+def cloudflare_email_decode(cfhex):
+    """
+    Cloudflare email protection: data-cfemail değerini çözer.
+    """
+    try:
+        r = int(cfhex[:2], 16)
+        email = ''.join([chr(int(cfhex[i:i+2], 16) ^ r) for i in range(2, len(cfhex), 2)])
+        return email
+    except Exception:
+        return ""
+
+
+def cloudflare_mailleri_ayikla(html):
+    mailler = []
+    try:
+        for cf in re.findall(r'data-cfemail=["\']([a-fA-F0-9]+)["\']', html or ""):
+            decoded = cloudflare_email_decode(cf)
+            if decoded:
+                mailler.append(decoded)
+    except Exception:
+        pass
+    return mailler
+
+
+def attribute_iceriklerini_topla(html):
+    """
+    HTML içindeki href, content, data, aria-label, title gibi alanları düz metne ekler.
+    Bazı mail/telefonlar görünen textte değil attribute içinde olur.
+    """
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+        parcalar = []
+
+        for tag in soup.find_all(True):
+            for attr in ["href", "content", "data-email", "data-phone", "data-tel", "aria-label", "title", "alt", "value"]:
+                val = tag.get(attr)
+                if val:
+                    parcalar.append(str(val))
+
+        return " ".join(parcalar)
+    except Exception:
+        return ""
+
+
+def js_json_iletisim_parcalari(html):
+    """
+    Script/JSON içinde gömülü email ve telefon parçalarını yakalamak için ham HTML döndürür.
+    """
+    if not html:
+        return ""
+    text = html_entity_temizle(html)
+    text = text.replace("\\u0040", "@").replace("\\u002e", ".").replace("\\/", "/")
+    text = text.replace("\\x40", "@").replace("\\x2e", ".")
+    return text
+
+
+def whatsapp_telefonlari_ayikla(html):
+    telefonlar = []
+    try:
+        for m in re.findall(r"(?:wa\.me/|whatsapp://send\?phone=|api\.whatsapp\.com/send\?phone=)(\+?\d{8,15})", html or "", flags=re.I):
+            telefonlar.append(m)
+    except Exception:
+        pass
+    return telefonlar
+
+
+def telefon_label_yakinindan_ayikla(text):
+    """
+    Telefon / Tel / Phone / Fax etiketinin yakınındaki numaraları yakalar.
+    """
+    if not text:
+        return []
+
+    telefonlar = []
+    patterns = [
+        r"(?:Telefon|Tel|Phone|Call|Santral|Pbx|PBX|Fax)\s*[:：]?\s*(\+?\d[\d\s\-\(\)\.]{8,25})",
+        r"(\+90\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2})",
+        r"(\+90\s*\d{3}\s*\d{2}\s*\d{2}\s*\d{2})",
+        r"(0\s*\d{3}\s*\d{3}\s*\d{2}\s*\d{2})",
+        r"(\(\s*0?\d{3}\s*\)\s*\d{3}\s*\d{2}\s*\d{2})",
+    ]
+
+    for p in patterns:
+        for m in re.findall(p, text, flags=re.I):
+            telefonlar.append(m)
+
+    return telefonlar
+
+
+def mail_label_yakinindan_ayikla(text):
+    """
+    Mail / E-posta / Email etiketinin yakınındaki e-postaları yakalar.
+    """
+    if not text:
+        return []
+
+    text = metinden_obfuscated_email_temizle(text)
+    mailler = []
+
+    patterns = [
+        r"(?:Mail|E-posta|Eposta|Email|E-mail)\s*[:：]?\s*([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})",
+        r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"
+    ]
+
+    for p in patterns:
+        for m in re.findall(p, text, flags=re.I):
+            mailler.append(m)
+
+    return mailler
+
+
+def contact_url_adaylari_uret(web_url):
+    """
+    Domain üzerinden farklı dil ve farklı yol kombinasyonlarıyla contact sayfaları üretir.
+    """
+    web_url = normalize_url(web_url)
+    parsed = urlparse(web_url)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+
+    paths = [
+        "/iletisim", "/iletisim/", "/tr/iletisim", "/tr/iletisim/",
+        "/iletişim", "/bize-ulasin", "/bize-ulasin/", "/bize-ulaşın",
+        "/contact", "/contact/", "/contact-us", "/contact-us/", "/home/contact", "/home/contact/", "/home/contacts", "/home/iletisim", "/home/iletisim/",
+        "/en/contact", "/en/contact/", "/en/contact-us", "/en/contact-us/", "/tr/contact", "/tr/contact/",
+        "/kurumsal/iletisim", "/kurumsal/iletisim/",
+        "/corporate/contact", "/corporate/contact/",
+        "/communication", "/reach-us", "/locations", "/offices",
+        "/hakkimizda", "/hakkimizda/", "/about", "/about/", "/about-us",
+        "/footer", "/site-haritasi", "/sitemap"
+    ]
+
+    adaylar = [web_url]
+    for p in paths:
+        adaylar.append(root + p)
+
+    return list(dict.fromkeys(adaylar))[:25]
+
+
+def sayfa_deep_contact_oku(url, referer="https://www.google.com/"):
+    """
+    Tek sayfadan tüm derin iletişim sinyallerini çıkarmaya çalışır.
+    """
+    sonuc = {"mailler": [], "telefonlar": [], "html": "", "text": "", "ok": False}
+
+    try:
+        r = guvenli_get(url, timeout=REQUEST_TIMEOUT, referer=referer)
+        if r.status_code >= 400:
+            return sonuc
+
+        html = html_entity_temizle(r.text or "")
+        attr_text = attribute_iceriklerini_topla(html)
+        js_text = js_json_iletisim_parcalari(html)
+        visible_text = temiz_metin(html)
+
+        full_text = " ".join([html, attr_text, js_text, visible_text])
+        full_text = html_entity_temizle(full_text)
+
+        mailler = []
+        telefonlar = []
+
+        mailto_mailler, tel_linkleri = mailto_ve_tel_linklerini_ayikla(html)
+
+        mailler.extend(mailto_mailler)
+        mailler.extend(cloudflare_mailleri_ayikla(html))
+        mailler.extend(mail_label_yakinindan_ayikla(full_text))
+        mailler.extend(eposta_ayikla(full_text))
+
+        telefonlar.extend(tel_linkleri)
+        telefonlar.extend(whatsapp_telefonlari_ayikla(html))
+        telefonlar.extend(telefon_label_yakinindan_ayikla(full_text))
+        telefonlar.extend(telefon_ayikla(full_text))
+
+        sonuc["mailler"] = temiz_mail_listesi(mailler)
+        sonuc["telefonlar"] = temiz_telefon_listesi(telefonlar)
+        sonuc["html"] = html
+        sonuc["text"] = visible_text
+        sonuc["ok"] = True
+
+    except Exception:
+        pass
+
+    return sonuc
+
+
+def playwright_deep_contact_oku(url):
+    """
+    JS ile yüklenen sayfalar için son çare Playwright ile sayfayı render edip okur.
+    Sadece Derin Tarama modunda çalışır.
+    """
+    sonuc = {"mailler": [], "telefonlar": [], "html": "", "text": "", "ok": False}
+
+    if not PLAYWRIGHT_FALLBACK_ENABLED or not PLAYWRIGHT_AKTIF:
+        return sonuc
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121 Safari/537.36",
+                viewport={"width": 1440, "height": 1000},
+                locale="tr-TR"
+            )
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(5000)
+
+            # Cookie varsa basmayı dene
+            try:
+                page.evaluate("""
+                    () => {
+                        const words = ['kabul', 'accept', 'tamam', 'onay'];
+                        const els = Array.from(document.querySelectorAll('button, a'));
+                        for (const el of els) {
+                            const txt = (el.innerText || '').toLowerCase();
+                            if (words.some(w => txt.includes(w))) {
+                                try { el.click(); } catch(e) {}
+                            }
+                        }
+                    }
+                """)
+                page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+            # scroll
+            for _ in range(5):
+                try:
+                    page.evaluate("window.scrollBy(0, 700)")
+                except Exception:
+                    pass
+                page.wait_for_timeout(600)
+
+            html = page.content()
+            text = page.inner_text("body")
+            browser.close()
+
+            full_text = " ".join([html_entity_temizle(html), html_entity_temizle(text), attribute_iceriklerini_topla(html)])
+            mailler = []
+            telefonlar = []
+            mailto_mailler, tel_linkleri = mailto_ve_tel_linklerini_ayikla(html)
+
+            mailler.extend(mailto_mailler)
+            mailler.extend(cloudflare_mailleri_ayikla(html))
+            mailler.extend(mail_label_yakinindan_ayikla(full_text))
+            mailler.extend(eposta_ayikla(full_text))
+
+            telefonlar.extend(tel_linkleri)
+            telefonlar.extend(whatsapp_telefonlari_ayikla(html))
+            telefonlar.extend(telefon_label_yakinindan_ayikla(full_text))
+            telefonlar.extend(telefon_ayikla(full_text))
+
+            sonuc["mailler"] = temiz_mail_listesi(mailler)
+            sonuc["telefonlar"] = temiz_telefon_listesi(telefonlar)
+            sonuc["html"] = html
+            sonuc["text"] = text
+            sonuc["ok"] = True
+
+    except Exception:
+        pass
+
+    return sonuc
+
+
+
 def websitesinden_iletisim_bul(web_url):
+    """
+    Deep Contact Extraction V3.1
+    Homepage + contact + footer + attribute + script/json + mailto/tel + whatsapp + Cloudflare + Playwright fallback.
+    """
     sonuc = {
         "web_adresi": web_url or "Bulunamadi",
         "telefon": "Bulunamadi",
@@ -3395,68 +3912,67 @@ def websitesinden_iletisim_bul(web_url):
     web_url = normalize_url(web_url)
 
     try:
-        time.sleep(random.uniform(0.4, 1.0))
-        res = guvenli_get(web_url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
-        html = res.text or ""
-        text = temiz_metin(html)
-
-        mailto_mailler, tel_linkleri = mailto_ve_tel_linklerini_ayikla(html)
-
-        mailler = []
-        telefonlar = []
-
-        mailler.extend(mailto_mailler)
-        mailler.extend(eposta_ayikla(html + " " + text))
-
-        telefonlar.extend(tel_linkleri)
-        telefonlar.extend(telefon_ayikla(html + " " + text))
-
+        tum_mailler = []
+        tum_telefonlar = []
         kaynak = web_url
+        okunan = 0
 
-        # Ana sayfada eksik varsa iletişim/kurumsal sayfaları tara
-        if not temiz_mail_listesi(mailler) or not temiz_telefon_listesi(telefonlar):
-            for contact_url in iletisim_sayfasi_linkleri_bul(web_url, html):
-                try:
-                    time.sleep(random.uniform(0.3, 0.9))
-                    c_res = guvenli_get(contact_url, timeout=REQUEST_TIMEOUT, referer=web_url)
+        aday_url_listesi = contact_url_adaylari_uret(web_url)
 
-                    if c_res.status_code >= 400:
-                        continue
-
-                    c_html = c_res.text or ""
-                    c_text = temiz_metin(c_html)
-
-                    c_mailto, c_tel_links = mailto_ve_tel_linklerini_ayikla(c_html)
-
-                    mailler.extend(c_mailto)
-                    mailler.extend(eposta_ayikla(c_html + " " + c_text))
-
-                    telefonlar.extend(c_tel_links)
-                    telefonlar.extend(telefon_ayikla(c_html + " " + c_text))
-
-                    if temiz_mail_listesi(mailler) or temiz_telefon_listesi(telefonlar):
-                        kaynak = contact_url
-
-                    if temiz_mail_listesi(mailler) and temiz_telefon_listesi(telefonlar):
-                        break
-
-                except Exception as e:
-                    logging.warning(f"Iletisim sayfasi okunamadi: {contact_url} - {str(e)}")
+        # Önce requests ile derin tarama
+        for idx, u in enumerate(aday_url_listesi):
+            try:
+                time.sleep(random.uniform(0.25, 0.75))
+                data = sayfa_deep_contact_oku(u, referer=web_url if idx > 0 else "https://www.google.com/")
+                if not data.get("ok"):
                     continue
 
-        temiz_mailler = temiz_mail_listesi(mailler)
-        temiz_telefonlar = temiz_telefon_listesi(telefonlar)
+                okunan += 1
+
+                if data.get("mailler"):
+                    tum_mailler.extend(data["mailler"])
+                    kaynak = u
+
+                if data.get("telefonlar"):
+                    tum_telefonlar.extend(data["telefonlar"])
+                    kaynak = u
+
+                # Ana hedef: en az bir mail + bir telefon
+                if temiz_mail_listesi(tum_mailler) and temiz_telefon_listesi(tum_telefonlar):
+                    break
+
+            except Exception:
+                continue
+
+        # Bulunamadıysa ve derin moddaysa JS render fallback
+        if (not temiz_mail_listesi(tum_mailler) or not temiz_telefon_listesi(tum_telefonlar)) and PLAYWRIGHT_FALLBACK_ENABLED:
+            for u in aday_url_listesi[:6]:
+                data = playwright_deep_contact_oku(u)
+                if data.get("mailler"):
+                    tum_mailler.extend(data["mailler"])
+                    kaynak = u
+                if data.get("telefonlar"):
+                    tum_telefonlar.extend(data["telefonlar"])
+                    kaynak = u
+
+                if temiz_mail_listesi(tum_mailler) and temiz_telefon_listesi(tum_telefonlar):
+                    break
+
+        temiz_mailler = temiz_mail_listesi(tum_mailler)
+        temiz_telefonlar = temiz_telefon_listesi(tum_telefonlar)
 
         if temiz_mailler:
             sonuc["eposta"] = ", ".join(temiz_mailler)
+
         if temiz_telefonlar:
             sonuc["telefon"] = ", ".join(temiz_telefonlar)
 
         sonuc["kaynak"] = kaynak
-        sonuc["durum"] = "Tamamlandi"
 
-        if sonuc["eposta"] == "Bulunamadi" and sonuc["telefon"] == "Bulunamadi":
-            sonuc["durum"] = "Web bulundu, iletisim bulunamadi"
+        if sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+            sonuc["durum"] = f"Tamamlandi | Deep contact sayfa: {okunan}"
+        else:
+            sonuc["durum"] = f"Web bulundu, iletisim bulunamadi | Deep contact sayfa: {okunan}"
 
     except Exception as e:
         sonuc["durum"] = "Hata"
@@ -3464,401 +3980,6 @@ def websitesinden_iletisim_bul(web_url):
         logging.error(f"Site iletisim hatasi: {web_url} - {str(e)}")
 
     return sonuc
-
-
-
-# ============================================================
-# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.8
-# ============================================================
-
-def guvenli_int(v, default=0):
-    try:
-        return int(max(0, min(100, float(v))))
-    except Exception:
-        return default
-
-
-def web_guven_skoru_hesapla(firma_adi, web_url, kaynak_text=""):
-    """
-    Web sitesinin firmaya ait olma ihtimalini 0-100 arasında puanlar.
-    """
-    if not web_url or web_url == "Bulunamadi":
-        return 0
-
-    try:
-        base_score = domain_puanla(web_url, firma_adi, kaynak_text)
-    except Exception:
-        base_score = 0
-
-    score = 35
-
-    domain = domain_al(web_url)
-    root = turkce_karakter_temizle(domain.lower()) if domain else ""
-    text = turkce_karakter_temizle((kaynak_text or "").lower()[:12000])
-    words = firma_onemli_kelimeleri(firma_adi) if "firma_onemli_kelimeleri" in globals() else firma_adi_sadelestir(firma_adi)
-
-    if domain.endswith(".com.tr"):
-        score += 14
-    elif domain.endswith(".com"):
-        score += 8
-
-    domain_match_count = 0
-    text_match_count = 0
-
-    for w in words[:5]:
-        if len(w) < 3:
-            continue
-        if w in root:
-            domain_match_count += 1
-            score += 16
-        if w in text:
-            text_match_count += 1
-            score += 5
-
-    if len(words) >= 2:
-        combo = (words[0] + words[1]).replace("-", "")
-        if combo in root.replace("-", ""):
-            score += 26
-
-    if domain_match_count >= 2:
-        score += 15
-    elif domain_match_count == 1 and len(words) >= 2 and text_match_count == 0:
-        # ABBA.com gibi tek kelime yanılmalarına ceza
-        score -= 22
-
-    if base_score > 60:
-        score += 16
-    elif base_score > 25:
-        score += 8
-    elif base_score < 0:
-        score -= 20
-
-    if istenmeyen_link_mi(web_url):
-        score -= 60
-
-    return guvenli_int(score)
-
-
-def mail_guven_skoru_hesapla(mail_text, web_url):
-    """
-    Mailin web domainiyle uyumunu puanlar.
-    """
-    if not mail_text or mail_text == "Bulunamadi":
-        return 0
-
-    mails = temiz_mail_listesi(mail_text.split(",")) if isinstance(mail_text, str) else temiz_mail_listesi(mail_text)
-    if not mails:
-        return 0
-
-    domain = domain_al(web_url) if web_url and web_url != "Bulunamadi" else ""
-    domain_root = domain.replace("www.", "").lower()
-
-    best = 35
-    for mail in mails:
-        m_domain = mail.split("@")[-1].lower().strip()
-
-        score = 45
-
-        if domain_root and (m_domain == domain_root or m_domain.endswith(domain_root) or domain_root.endswith(m_domain)):
-            score += 45
-        elif domain_root:
-            # farklı domain ise ama generic mail değilse orta
-            score += 10
-
-        if mail.startswith(("info@", "sales@", "export@", "contact@", "iletisim@", "marketing@")):
-            score += 10
-
-        if any(x in mail for x in ["gmail.com", "hotmail.com", "outlook.com", "yahoo.com"]):
-            score -= 20
-
-        best = max(best, score)
-
-    return guvenli_int(best)
-
-
-def telefon_guven_skoru_hesapla(telefon_text):
-    """
-    Telefon formatına göre güven puanı üretir.
-    """
-    if not telefon_text or telefon_text == "Bulunamadi":
-        return 0
-
-    tels = temiz_telefon_listesi(telefon_text.split(",")) if isinstance(telefon_text, str) else temiz_telefon_listesi(telefon_text)
-    if not tels:
-        return 0
-
-    best = 40
-
-    for tel in tels:
-        rakam = re.sub(r"\D", "", tel)
-        score = 45
-
-        if len(rakam) == 10:
-            score += 20
-        elif len(rakam) == 11 and rakam.startswith("0"):
-            score += 25
-        elif 12 <= len(rakam) <= 13 and rakam.startswith("90"):
-            score += 30
-        elif 10 <= len(rakam) <= 15:
-            score += 15
-
-        if len(set(rakam)) <= 2:
-            score -= 40
-
-        best = max(best, score)
-
-    return guvenli_int(best)
-
-
-def genel_guven_hesapla(web_score, mail_score, tel_score):
-    """
-    Web daha ağır basar; mail ve telefon destekleyici sinyaldir.
-    """
-    score = (web_score * 0.48) + (mail_score * 0.32) + (tel_score * 0.20)
-    return guvenli_int(score)
-
-
-def manuel_kontrol_gerekir_mi(genel_score, web_score, mail_score, tel_score):
-    if genel_score >= 75:
-        return "Hayır"
-    if web_score >= 75 and (mail_score >= 65 or tel_score >= 65):
-        return "Hayır"
-    return "Evet"
-
-
-def sonuc_guven_skorlari_ekle(sonuc, firma_adi):
-    """
-    Enrichment sonucuna web/mail/telefon/genel güven skorları ekler.
-    """
-    web_url = sonuc.get("web_adresi", "")
-    kaynak_text = ""
-
-    # Kaynak URL okunabiliyorsa kısa içerik ile web güvenini güçlendir
-    try:
-        if web_url and web_url != "Bulunamadi":
-            r = guvenli_get(web_url, timeout=6, referer="https://www.google.com/")
-            if r.status_code < 400:
-                kaynak_text = temiz_metin((r.text or "")[:15000])
-    except Exception:
-        kaynak_text = ""
-
-    web_score = web_guven_skoru_hesapla(firma_adi, web_url, kaynak_text)
-    mail_score = mail_guven_skoru_hesapla(sonuc.get("eposta", ""), web_url)
-    tel_score = telefon_guven_skoru_hesapla(sonuc.get("telefon", ""))
-
-    genel_score = genel_guven_hesapla(web_score, mail_score, tel_score)
-    manuel = manuel_kontrol_gerekir_mi(genel_score, web_score, mail_score, tel_score)
-
-    sonuc["web_guven"] = web_score
-    sonuc["mail_guven"] = mail_score
-    sonuc["telefon_guven"] = tel_score
-    sonuc["genel_guven"] = genel_score
-    sonuc["manuel_kontrol"] = manuel
-
-    # Durum alanını daha açıklayıcı hale getir
-    try:
-        kalite = "Yüksek" if genel_score >= 75 else ("Orta" if genel_score >= 45 else "Düşük")
-        durum = sonuc.get("durum", "")
-        if "Güven:" not in durum:
-            sonuc["durum"] = f"{durum} | Güven: {genel_score}% | Kalite: {kalite} | Manuel: {manuel}"
-    except Exception:
-        pass
-
-    return sonuc
-
-
-
-
-# ============================================================
-# YERLI / YABANCI FIRMA AYIRMA MOTORU V2.8
-# ============================================================
-
-COUNTRY_TLD_MAP = {
-    ".com.tr": ("Türkiye", 35), ".tr": ("Türkiye", 30),
-    ".de": ("Almanya", 35), ".it": ("İtalya", 35), ".fr": ("Fransa", 35),
-    ".cn": ("Çin", 40), ".com.cn": ("Çin", 40),
-    ".kr": ("Güney Kore", 35), ".co.kr": ("Güney Kore", 40),
-    ".uk": ("Birleşik Krallık", 30), ".co.uk": ("Birleşik Krallık", 35),
-    ".us": ("Amerika Birleşik Devletleri", 30), ".in": ("Hindistan", 35),
-    ".jp": ("Japonya", 35), ".ru": ("Rusya", 35), ".pl": ("Polonya", 35),
-    ".nl": ("Hollanda", 35), ".be": ("Belçika", 35), ".bg": ("Bulgaristan", 35),
-    ".hu": ("Macaristan", 35), ".pk": ("Pakistan", 35), ".tw": ("Tayvan", 35),
-    ".ae": ("Birleşik Arap Emirlikleri", 35), ".es": ("İspanya", 35)
-}
-
-COUNTRY_NAME_SIGNALS = {
-    "Türkiye": ["türkiye", "turkiye", "turkey"],
-    "Çin": ["china", "çin", "guangzhou", "shenzhen", "ningbo", "dongguan", "foshan", "zhejiang", "hangzhou", "shanghai", "beijing"],
-    "Almanya": ["germany", "almanya", "deutschland"],
-    "İtalya": ["italy", "italia", "italya"],
-    "Fransa": ["france", "fransa"],
-    "Hindistan": ["india", "hindistan"],
-    "Güney Kore": ["south korea", "korea", "kore"],
-    "Birleşik Krallık": ["united kingdom", "uk", "england", "ingiltere"],
-    "Amerika Birleşik Devletleri": ["united states", "usa", "america", "amerika"],
-    "Bulgaristan": ["bulgaria", "bulgaristan"],
-    "Belçika": ["belgium", "belçika"],
-    "Hollanda": ["netherlands", "hollanda"],
-    "İspanya": ["spain", "ispanya"],
-    "Tayvan": ["taiwan", "tayvan"],
-    "Pakistan": ["pakistan"],
-    "Rusya": ["russia", "rusya"],
-    "Japonya": ["japan", "japonya"],
-    "Macaristan": ["hungary", "macaristan"],
-    "Ukrayna": ["ukraine", "ukrayna"],
-    "Birleşik Arap Emirlikleri": ["united arab emirates", "uae", "dubai"]
-}
-
-TURKISH_COMPANY_SIGNALS = [
-    " a.ş", " a.s", " aş", " anonim", " limited şirketi", " limited sirketi",
-    " ltd şti", " ltd sti", " ltd. şti", " ltd. sti", " sanayi", " san.",
-    " ticaret", " tic.", " iç ve dış", " ic ve dis", " dış ticaret", " dis ticaret",
-    " kozmetik", " makina", " makine", " kimya", " ambalaj", " gıda", " gida",
-    " medikal", " sağlık", " saglik", " tekstil", " plastik"
-]
-
-FOREIGN_COMPANY_SIGNALS = {
-    "Çin": [" co., ltd", " co ltd", " technology co", "guangzhou", "shenzhen", "ningbo", "dongguan", "zhejiang"],
-    "Almanya": [" gmbh", " ag "],
-    "İtalya": [" s.r.l", " srl", " s.p.a", " spa "],
-    "Amerika Birleşik Devletleri": [" llc", " inc", " corp", " corporation"],
-    "Hindistan": [" pvt ltd", " private limited"],
-    "Birleşik Krallık": [" ltd", " limited"],
-    "Güney Kore": [" co ltd", " co., ltd"],
-    "Fransa": [" s.a.", " sas "]
-}
-
-
-def domain_ulke_sinyali(web_url):
-    if not web_url or web_url == "Bulunamadi":
-        return None, 0
-    d = domain_al(web_url).lower()
-    if not d:
-        return None, 0
-    for tld, (country, score) in sorted(COUNTRY_TLD_MAP.items(), key=lambda x: len(x[0]), reverse=True):
-        if d.endswith(tld):
-            return country, score
-    return None, 0
-
-
-def telefon_ulke_sinyali(telefon):
-    if not telefon or telefon == "Bulunamadi":
-        return None, 0
-    tel = str(telefon)
-    rakam = re.sub(r"\D", "", tel)
-    if tel.strip().startswith("+90") or rakam.startswith("90") or (len(rakam) == 11 and rakam.startswith("0")):
-        return "Türkiye", 40
-    prefix_map = {"86": "Çin", "49": "Almanya", "39": "İtalya", "33": "Fransa", "91": "Hindistan", "82": "Güney Kore", "44": "Birleşik Krallık", "1": "Amerika Birleşik Devletleri", "81": "Japonya", "7": "Rusya", "34": "İspanya", "31": "Hollanda", "32": "Belçika", "359": "Bulgaristan", "971": "Birleşik Arap Emirlikleri"}
-    for prefix, country in sorted(prefix_map.items(), key=lambda x: len(x[0]), reverse=True):
-        if tel.strip().startswith("+" + prefix) or rakam.startswith(prefix):
-            return country, 30
-    return None, 0
-
-
-def metinden_ulke_sinyali(text):
-    if not text:
-        return None, 0
-    low = turkce_karakter_temizle(str(text).lower())
-    best_country, best_score = None, 0
-    for country, signals in COUNTRY_NAME_SIGNALS.items():
-        for sig in signals:
-            sig_low = turkce_karakter_temizle(sig.lower())
-            if re.search(r"\b" + re.escape(sig_low) + r"\b", low):
-                score = 50 if country == "Türkiye" else 45
-                if score > best_score:
-                    best_country, best_score = country, score
-    return best_country, best_score
-
-
-def unvandan_ulke_sinyali(firma_adi):
-    if not firma_adi:
-        return None, 0
-    low = " " + turkce_karakter_temizle(str(firma_adi).lower()) + " "
-    tr_score = 0
-    for sig in TURKISH_COMPANY_SIGNALS:
-        if turkce_karakter_temizle(sig.lower()) in low:
-            tr_score += 10
-    if tr_score >= 15:
-        return "Türkiye", min(55, tr_score)
-
-    best_country, best_score = None, 0
-    for country, signals in FOREIGN_COMPANY_SIGNALS.items():
-        score = 0
-        for sig in signals:
-            if turkce_karakter_temizle(sig.lower()) in low:
-                score += 14
-        if score > best_score:
-            best_country, best_score = country, score
-    if best_country:
-        return best_country, min(50, best_score)
-    return None, 0
-
-
-def mail_domain_ulke_sinyali(eposta):
-    if not eposta or eposta == "Bulunamadi":
-        return None, 0
-    mails = temiz_mail_listesi(str(eposta).split(","))
-    scores = {}
-    for mail in mails:
-        domain = mail.split("@")[-1].lower().strip()
-        country, score = domain_ulke_sinyali("https://" + domain)
-        if country:
-            scores[country] = scores.get(country, 0) + max(15, score - 10)
-    if not scores:
-        return None, 0
-    country = max(scores, key=scores.get)
-    return country, min(45, scores[country])
-
-
-def sirket_tipi_ulke_tahmin_et(firma_adi, web_adresi="", telefon="", eposta="", kaynak_text=""):
-    country_scores = {}
-
-    def add(country, score):
-        if country and score > 0:
-            country_scores[country] = country_scores.get(country, 0) + score
-
-    for c, s in [
-        metinden_ulke_sinyali(firma_adi),
-        metinden_ulke_sinyali(kaynak_text),
-        unvandan_ulke_sinyali(firma_adi),
-        domain_ulke_sinyali(web_adresi),
-        telefon_ulke_sinyali(telefon),
-        mail_domain_ulke_sinyali(eposta),
-    ]:
-        add(c, s)
-
-    if not country_scores:
-        return {"sirket_tipi": "Belirsiz", "ulke_tahmini": "Belirsiz", "ulke_guven": 0}
-
-    best_country = max(country_scores, key=country_scores.get)
-    ulke_guven = guvenli_int(min(100, country_scores[best_country]))
-
-    if best_country == "Türkiye" and ulke_guven >= 30:
-        tip = "Yerli"
-    elif best_country != "Türkiye" and ulke_guven >= 30:
-        tip = "Yabancı"
-    else:
-        tip = "Belirsiz"
-
-    return {"sirket_tipi": tip, "ulke_tahmini": best_country, "ulke_guven": ulke_guven}
-
-
-def sonuc_ulke_bilgisi_ekle(sonuc, firma_adi):
-    try:
-        kaynak_text = " ".join([str(sonuc.get("kaynak", "")), str(sonuc.get("web_adresi", "")), str(sonuc.get("durum", ""))])
-        tahmin = sirket_tipi_ulke_tahmin_et(firma_adi, sonuc.get("web_adresi", ""), sonuc.get("telefon", ""), sonuc.get("eposta", ""), kaynak_text)
-        sonuc["sirket_tipi"] = tahmin["sirket_tipi"]
-        sonuc["ulke_tahmini"] = tahmin["ulke_tahmini"]
-        sonuc["ulke_guven"] = tahmin["ulke_guven"]
-        durum = sonuc.get("durum", "")
-        if "Tip:" not in durum:
-            sonuc["durum"] = f"{durum} | Tip: {tahmin['sirket_tipi']} | Ülke: {tahmin['ulke_tahmini']} %{tahmin['ulke_guven']}"
-    except Exception:
-        sonuc["sirket_tipi"] = "Belirsiz"
-        sonuc["ulke_tahmini"] = "Belirsiz"
-        sonuc["ulke_guven"] = 0
-    return sonuc
-
 
 
 def derin_bilgi_bul(firma_adi):
@@ -3905,7 +4026,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.8
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V3.1
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -4435,7 +4556,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.8.
+    PDF firma çıkarma motoru V3.1.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -4482,7 +4603,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.8.
+    Excel firma çıkarma motoru V3.1.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -5279,6 +5400,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.8
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V3.1
 </div>
 """, unsafe_allow_html=True)
