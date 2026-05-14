@@ -7947,6 +7947,991 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
+# V80 DYNAMIC STRUCTURE CONTACT RESOLVER
+# Problem: Bazi kurumsal sitelerde iletisim bilgisi /contact veya
+# /iletisim yerine yerleskeler, lokasyonlar, ofisler, CDN/PDF veya
+# JS/JSON icinde duruyor. V80 bu yapilari one alir.
+# ============================================================
+
+V79_WEBSITE_ILETISIM_BUL_FINAL = websitesinden_iletisim_bul
+
+V80_CONTACT_KEYWORDS = tuple(dict.fromkeys(V79_CONTACT_KEYWORDS + (
+    "yerleskeler", "yerleşkeler", "yerleskesi", "yerleşkesi", "yerleske", "yerleşke",
+    "lokasyon", "lokasyonlar", "ofis", "ofisler", "sube", "şube", "subeler", "şubeler",
+    "tesis", "facility", "facilities", "campus", "campuses", "branch", "branches",
+    "headquarters", "hq", "adres", "adresler", "address", "addresses",
+    "iletisim-bilgileri", "iletişim-bilgileri", "contact-information", "contact-details",
+    "data", "api/file", "uploads", "docs", "pdf"
+)))
+
+V80_PRIORITY_CONTACT_PATHS = [
+    "/", "/tr", "/tr/",
+    "/tr/yerleskeler", "/tr/yerleskeler/", "/tr/yerleşkeler", "/tr/yerleşkeler/",
+    "/yerleskeler", "/yerleskeler/", "/yerleşkeler", "/yerleşkeler/",
+    "/tr/lokasyonlar", "/tr/lokasyonlar/", "/lokasyonlar", "/lokasyonlar/",
+    "/tr/ofisler", "/tr/ofisler/", "/ofisler", "/ofisler/",
+    "/tr/subeler", "/tr/subeler/", "/tr/şubeler", "/tr/şubeler/",
+    "/tr/adresler", "/tr/adresler/", "/adresler", "/adresler/",
+    "/tr/iletisim-bilgileri", "/tr/iletişim-bilgileri", "/iletisim-bilgileri", "/iletişim-bilgileri",
+    "/tr/contact-information", "/contact-information", "/tr/contact-details", "/contact-details",
+    "/locations", "/locations/", "/en/locations", "/en/locations/",
+    "/offices", "/offices/", "/en/offices", "/en/offices/",
+    "/branches", "/branches/", "/en/branches", "/en/branches/",
+    "/contact", "/contact/", "/tr/contact", "/tr/contact/",
+    "/iletisim", "/iletisim/", "/tr/iletisim", "/tr/iletisim/",
+    "/iletişim", "/iletişim/", "/tr/iletişim", "/tr/iletişim/",
+    "/contact-us", "/contact-us/", "/tr/contact-us", "/tr/contact-us/",
+    "/kurumsal/iletisim", "/tr/kurumsal/iletisim", "/corporate/contact", "/en/corporate/contact",
+    "/sitemap.xml", "/sitemap_index.xml"
+]
+
+
+def v80_limits():
+    base = v79_limits().copy()
+    if SCAN_MODE == "Derin Tarama":
+        base.update({"static_pages": 38, "browser_pages": 5, "search_queries": 12, "assets": 14, "pdfs": 6, "sitemap": 24})
+    elif SCAN_MODE == "Hızlı Tarama":
+        base.update({"static_pages": 12, "browser_pages": 1, "search_queries": 3, "assets": 4, "pdfs": 2, "sitemap": 8})
+    else:
+        base.update({"static_pages": 26, "browser_pages": 2, "search_queries": 7, "assets": 8, "pdfs": 4, "sitemap": 16})
+    return base
+
+
+def v80_url_contact_score(url):
+    low = turkce_karakter_temizle(str(url or "").lower())
+    score = 0
+    if any(x in low for x in ["yerleske", "yerleskeler", "locations", "offices", "branches", "lokasyon", "ofis", "sube", "adres"]):
+        score += 130
+    if any(x in low for x in ["contact-information", "contact-details", "iletisim-bilgileri"]):
+        score += 120
+    if any(x in low for x in ["contact", "iletisim", "bize-ulasin"]):
+        score += 90
+    if any(x in low for x in ["sitemap"]):
+        score += 65
+    if any(x in low for x in [".pdf", "/api/file/", "/uploads/", "/docs/"]):
+        score += 45
+    if any(x in low for x in ["form", "basvuru", "application", "newsletter", "ebulten"]):
+        score -= 35
+    if any(x in low for x in ["privacy", "gizlilik", "kvkk", "cookie", "cerez"]):
+        score -= 25
+    return score
+
+
+def v80_same_brand_or_domain(url, web_url, firma_adi="", text=""):
+    try:
+        if v72_same_site(url, web_url):
+            return True
+    except Exception:
+        pass
+
+    profile = v74_company_profile(firma_adi)
+    marka = profile.get("marka", "")
+    web_root = v72_domain_root(web_url)
+    url_root = v72_domain_root(url)
+    blob = turkce_karakter_temizle(" ".join([str(url or ""), str(text or "")]).lower())
+
+    if web_root and url_root and web_root == url_root:
+        return True
+    if marka and marka in blob:
+        return True
+    if web_root and web_root in blob:
+        return True
+    return False
+
+
+def v80_sitemap_contact_urls(base_url, firma_adi=""):
+    base = v79_base_url(base_url)
+    adaylar = [base + "/sitemap.xml", base + "/sitemap_index.xml"]
+    urls = []
+
+    for sm in adaylar:
+        try:
+            r = guvenli_get(sm, timeout=min(v80_limits()["timeout"] + 2, 9), referer=base)
+            if r.status_code >= 400:
+                continue
+            text = html_entity_temizle(r.text or "")
+            found = re.findall(r"https?://[^<>\s\"']+", text, flags=re.I)
+            for u in found:
+                u = normalize_url(u.strip())
+                if not v80_same_brand_or_domain(u, base_url, firma_adi):
+                    continue
+                low = turkce_karakter_temizle(u.lower())
+                if any(k in low for k in V80_CONTACT_KEYWORDS):
+                    urls.append(u)
+        except Exception:
+            continue
+
+    final = []
+    seen = set()
+    for u in sorted(urls, key=v80_url_contact_score, reverse=True):
+        if u not in seen:
+            seen.add(u)
+            final.append(u)
+    return final[:v80_limits()["sitemap"]]
+
+
+def v80_candidate_contact_urls(web_url, home_html="", firma_adi=""):
+    base = v79_base_url(web_url)
+    urls = []
+
+    p = urlparse(normalize_url(web_url))
+    parts = [x for x in p.path.split("/") if x]
+    langs = []
+    if parts and parts[0].lower() in ["tr", "en", "de", "fr", "es", "ar"]:
+        langs.append("/" + parts[0].lower())
+    langs.extend(["/tr", "/en", ""])
+
+    for path in V80_PRIORITY_CONTACT_PATHS:
+        if path.startswith("/tr/") or path in ["/tr", "/tr/"]:
+            urls.append(base + path)
+            continue
+        if path.startswith("/en/") or path in ["/en", "/en/"]:
+            urls.append(base + path)
+            continue
+        for lang in langs:
+            if lang and path not in ["/", "/sitemap.xml", "/sitemap_index.xml"] and not path.startswith(lang + "/"):
+                urls.append(base + lang + path)
+        urls.append(base + path)
+
+    urls.extend(v79_internal_contact_links(base, home_html))
+    urls.extend(v80_sitemap_contact_urls(base, firma_adi))
+    urls.extend(v79_candidate_contact_urls(web_url, home_html))
+
+    final = []
+    seen = set()
+    for u in sorted(urls, key=v80_url_contact_score, reverse=True):
+        u = normalize_url(u)
+        if not url_gecerli_mi(u):
+            continue
+        if not v80_same_brand_or_domain(u, web_url, firma_adi):
+            continue
+        if u not in seen:
+            seen.add(u)
+            final.append(u)
+    return final[:55]
+
+
+def v80_extract_pdf_contacts(url, web_url, firma_adi=""):
+    result = {"mailler": [], "telefonlar": [], "ok": False}
+    try:
+        r = guvenli_get(url, timeout=10, referer=web_url)
+        if r.status_code >= 400:
+            return result
+        content_type = (r.headers.get("content-type", "") or "").lower()
+        if ".pdf" not in url.lower() and "pdf" not in content_type:
+            return result
+        content = getattr(r, "content", b"") or b""
+        if not content or len(content) > 12 * 1024 * 1024:
+            return result
+
+        texts = []
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            total = len(pdf.pages)
+            page_indexes = list(dict.fromkeys(list(range(min(2, total))) + list(range(max(total - 3, 0), total))))
+            for idx in page_indexes:
+                try:
+                    txt = pdf.pages[idx].extract_text() or ""
+                    if txt:
+                        texts.append(txt)
+                except Exception:
+                    continue
+
+        blob = v79_decode_blob(" ".join(texts))
+        if not v80_same_brand_or_domain(url, web_url, firma_adi, blob):
+            return result
+        m, t = v79_extract_contacts(blob)
+        result.update({"mailler": m, "telefonlar": t, "ok": bool(m or t)})
+    except Exception as e:
+        logging.warning(f"V80 PDF contact hata: {url} - {str(e)}")
+    return result
+
+
+def v80_linked_asset_contacts(web_url, html, firma_adi=""):
+    result = {"mailler": [], "telefonlar": [], "ok": False}
+    base = v79_base_url(web_url)
+    assets = []
+
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+        for tag in soup.find_all(["script", "link"]):
+            src = tag.get("src") or tag.get("href") or ""
+            if not src:
+                continue
+            u = normalize_url(src, base_url=base)
+            low = u.lower()
+            if not url_gecerli_mi(u) or not v80_same_brand_or_domain(u, web_url, firma_adi):
+                continue
+            if any(x in low for x in [".js", ".json", "_next", "_nuxt", "/assets/", "/static/", "/api/"]):
+                assets.append(u)
+    except Exception:
+        pass
+
+    for asset in list(dict.fromkeys(assets))[:v80_limits()["assets"]]:
+        try:
+            r = guvenli_get(asset, timeout=min(v80_limits()["timeout"] + 1, 8), referer=web_url)
+            if r.status_code >= 400:
+                continue
+            blob = v79_decode_blob(r.text or "")
+            if not blob:
+                continue
+            m, t = v79_extract_contacts(blob)
+            result["mailler"].extend(m)
+            result["telefonlar"].extend(t)
+            result["ok"] = True
+        except Exception:
+            continue
+
+    result["mailler"] = temiz_mail_listesi(result["mailler"])
+    result["telefonlar"] = temiz_telefon_listesi(result["telefonlar"])
+    return result
+
+
+def v80_search_contact_completion(web_url, firma_adi):
+    domain = domain_al(web_url).replace("www.", "")
+    domain_root = v72_domain_root(web_url)
+    firma = firma_adi_temizle(firma_adi)
+    profile = v74_company_profile(firma)
+    marka = profile.get("marka", "")
+    queries = [
+        f'site:{domain} yerleskeler telefon e-posta',
+        f'site:{domain} locations phone email',
+        f'site:{domain} contact information phone email',
+        f'site:{domain} filetype:pdf "{firma}" phone email',
+        f'site:{domain} filetype:pdf "{firma}" telefon e-posta',
+        f'"{firma}" "{domain_root}" "e-posta" "telefon"',
+        f'"{firma}" "{domain_root}" "email" "phone"',
+        f'"{firma}" "P:" "F:" "@{domain_root}"',
+        f'"{firma}" "T:" "@{domain_root}"',
+        f'"{firma}" "marketing@{domain_root}"',
+    ]
+
+    if domain:
+        queries.extend([
+            f'site:wwwcdn.{domain} "{firma}" phone email',
+            f'site:cdn.{domain} "{firma}" phone email',
+            f'site:{domain}/uploads "{firma}" telefon',
+            f'site:{domain}/docs "{firma}" email',
+        ])
+
+    mailler, telefonlar, links = [], [], []
+    pdf_seen = set()
+
+    for q in queries[:v80_limits()["search_queries"]]:
+        try:
+            items = v76_search_result_items(q, limit=12)
+        except Exception:
+            items = []
+
+        for item in items:
+            url = normalize_url(item.get("url", ""))
+            text = item.get("text", "")
+            if not url:
+                continue
+
+            if not v80_same_brand_or_domain(url, web_url, firma_adi, text):
+                continue
+
+            blob = " ".join([text, url])
+            m, t = v79_extract_contacts(blob)
+            mailler.extend(m)
+            telefonlar.extend(t)
+
+            low_url = turkce_karakter_temizle(url.lower())
+            if any(k in low_url for k in V80_CONTACT_KEYWORDS):
+                links.append(url)
+
+            if (".pdf" in low_url or "/api/file/" in low_url or "/uploads/" in low_url) and url not in pdf_seen:
+                pdf_seen.add(url)
+                if len(pdf_seen) <= v80_limits()["pdfs"]:
+                    pdata = v80_extract_pdf_contacts(url, web_url, firma_adi)
+                    mailler.extend(pdata.get("mailler", []))
+                    telefonlar.extend(pdata.get("telefonlar", []))
+
+    for link in sorted(list(dict.fromkeys(links)), key=v80_url_contact_score, reverse=True)[:8]:
+        if ".pdf" in link.lower():
+            pdata = v80_extract_pdf_contacts(link, web_url, firma_adi)
+            mailler.extend(pdata.get("mailler", []))
+            telefonlar.extend(pdata.get("telefonlar", []))
+        else:
+            data = v79_fetch_contact_page(link, web_url)
+            mailler.extend(data.get("mailler", []))
+            telefonlar.extend(data.get("telefonlar", []))
+
+    return {
+        "mailler": v79_filter_mails(mailler, web_url, firma_adi),
+        "telefonlar": temiz_telefon_listesi(telefonlar),
+        "links": list(dict.fromkeys(links)),
+    }
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    sonuc = {
+        "web_adresi": web_url or "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "Basladi",
+        "hata": ""
+    }
+    if not web_url:
+        sonuc["durum"] = "Web sitesi bulunamadi"
+        return sonuc
+
+    web_url = normalize_url(web_url)
+    mailler, telefonlar, kaynaklar, html_blobs = [], [], [], []
+    okunan = 0
+
+    home = v79_fetch_contact_page(web_url, "https://www.google.com/")
+    if home.get("ok"):
+        okunan += 1
+        mailler.extend(home.get("mailler", []))
+        telefonlar.extend(home.get("telefonlar", []))
+        kaynaklar.append(web_url)
+        html_blobs.append(home.get("html", ""))
+
+    urls = v80_candidate_contact_urls(web_url, home.get("html", ""), firma_adi)
+    for u in urls[:v80_limits()["static_pages"]]:
+        try:
+            if ".pdf" in u.lower():
+                data = v80_extract_pdf_contacts(u, web_url, firma_adi)
+                html = ""
+            else:
+                data = v79_fetch_contact_page(u, web_url)
+                html = data.get("html", "")
+            if not data.get("ok"):
+                continue
+            okunan += 1
+            mailler.extend(data.get("mailler", []))
+            telefonlar.extend(data.get("telefonlar", []))
+            kaynaklar.append(u)
+            if html:
+                html_blobs.append(html)
+            if v79_filter_mails(mailler, web_url, firma_adi) and temiz_telefon_listesi(telefonlar):
+                break
+        except Exception:
+            continue
+
+    filtered_mail = v79_filter_mails(mailler, web_url, firma_adi)
+    filtered_tel = temiz_telefon_listesi(telefonlar)
+
+    # SPA/Next/Nuxt sitelerinde veri JS veya JSON asset icinde kalabiliyor.
+    if (not filtered_mail or not filtered_tel) and html_blobs:
+        for html in html_blobs[:3]:
+            asset_data = v80_linked_asset_contacts(web_url, html, firma_adi)
+            mailler.extend(asset_data.get("mailler", []))
+            telefonlar.extend(asset_data.get("telefonlar", []))
+            filtered_mail = v79_filter_mails(mailler, web_url, firma_adi)
+            filtered_tel = temiz_telefon_listesi(telefonlar)
+            if filtered_mail and filtered_tel:
+                break
+
+    # Statik/asset yetmezse dinamik render.
+    if (not filtered_mail or not filtered_tel) and PLAYWRIGHT_AKTIF:
+        render_urls = sorted(urls, key=v80_url_contact_score, reverse=True)
+        browser_data = v79_browser_contact_pages(render_urls)
+        mailler.extend(browser_data.get("mailler", []))
+        telefonlar.extend(browser_data.get("telefonlar", []))
+        filtered_mail = v79_filter_mails(mailler, web_url, firma_adi)
+        filtered_tel = temiz_telefon_listesi(telefonlar)
+
+    # Hala eksikse arama + ayni marka/domain PDF/CDN kaynaklari.
+    if not filtered_mail or not filtered_tel:
+        search_data = v80_search_contact_completion(web_url, firma_adi)
+        mailler.extend(search_data.get("mailler", []))
+        telefonlar.extend(search_data.get("telefonlar", []))
+        kaynaklar.extend(search_data.get("links", []))
+        filtered_mail = v79_filter_mails(mailler, web_url, firma_adi)
+        filtered_tel = temiz_telefon_listesi(telefonlar)
+
+    if filtered_mail:
+        sonuc["eposta"] = ", ".join(filtered_mail[:5])
+    if filtered_tel:
+        sonuc["telefon"] = ", ".join(filtered_tel[:5])
+    sonuc["kaynak"] = list(dict.fromkeys(kaynaklar))[0] if kaynaklar else web_url
+
+    if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = f"Tamamlandi | V80 dynamic contact sayfa: {okunan}"
+    elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = f"Kismi tamamlandi | V80 dynamic contact sayfa: {okunan}"
+    else:
+        sonuc["durum"] = f"Web bulundu, iletisim bulunamadi | V80 dynamic contact sayfa: {okunan}"
+
+    return sonuc
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+    try:
+        time.sleep(random.uniform(0.35, 0.8))
+        web = firma_websitesi_bul(firma_adi)
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V80 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
+# V81 STRUCTURE-AWARE OFFICIAL SITE + CONTACT RESOLVER
+# Test sonucu: V79/V80 contact katmani bazi siteleri toparladi ama
+# Dengeli mod resmi domain adaylarini marka-only domainlerde harciyordu.
+# V81, resmi site bulmayi sektor yapisina gore yeniden siralar ve
+# eksik contact icin legacy/subdomain/PDF/snippet katmanini genisletir.
+# ============================================================
+
+V80_FIRMA_WEBSITE_BUL_FINAL = firma_websitesi_bul
+V80_WEBSITE_ILETISIM_BUL_FINAL = websitesinden_iletisim_bul
+V80_TEMIZ_TELEFON_LISTESI = temiz_telefon_listesi
+
+V81_BAD_RESULT_DOMAINS = {
+    "wikipedia.org", "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+    "youtube.com", "crunchbase.com", "bloomberg.com", "dnb.com", "zoominfo.com",
+    "tumisyeri.com", "cybo.com", "firmaekle.net", "superrehber.net", "alo118.com",
+    "turkdenizcilik.com", "gmo.org.tr", "sasad.org.tr", "dredgepoint.org",
+    "jsmea.or.jp", "thedeckmedia.com", "paluba.media", "maritimejournal.com",
+}
+
+
+def temiz_telefon_listesi(telefonlar):
+    final = []
+    seen_digits = set()
+
+    for tel in telefonlar or []:
+        tel_raw = html_entity_temizle(str(tel or "")).strip()
+        if not tel_raw:
+            continue
+        if re.search(r"\d+\.\d+", tel_raw):
+            continue
+
+        tel_clean = tel_raw.replace("tel:", "")
+        tel_clean = re.sub(r"\s+", " ", tel_clean).strip()
+        digits = re.sub(r"\D", "", tel_clean)
+
+        if len(digits) < 10 or len(digits) > 15:
+            continue
+        if len(set(digits)) <= 2:
+            continue
+        if re.search(r"(\d)\1{5,}", digits):
+            continue
+
+        # Turkiye numaralarinda alan kodu 1xx degildir; bu filtre 177/001 gibi
+        # sayfa koordinati veya bozuk parcalari telefon sanmayi azaltir.
+        if digits.startswith("90") and len(digits) == 12:
+            area = digits[2:5]
+            if area.startswith("1") or area.startswith("00"):
+                continue
+            norm = "+90 " + digits[2:5] + " " + digits[5:8] + " " + digits[8:10] + " " + digits[10:12]
+        elif digits.startswith("0") and len(digits) == 11:
+            area = digits[1:4]
+            if area.startswith("1") or area.startswith("00"):
+                continue
+            norm = "+90 " + digits[1:4] + " " + digits[4:7] + " " + digits[7:9] + " " + digits[9:11]
+        elif len(digits) == 10 and digits[0] in "2358":
+            norm = "+90 " + digits[0:3] + " " + digits[3:6] + " " + digits[6:8] + " " + digits[8:10]
+        elif digits.startswith("00") and len(digits) >= 12:
+            norm = "+" + digits[2:]
+        else:
+            norm = tel_clean
+
+        key = re.sub(r"\D", "", norm)[-10:]
+        if key in seen_digits:
+            continue
+        seen_digits.add(key)
+        final.append(norm)
+
+    return final[:6]
+
+
+def v81_add_root(weighted, root, weight):
+    root = normalize_domain_token(str(root or "")).strip("-")
+    if not root or len(root) < 3:
+        return
+    if root not in weighted or weight > weighted[root]:
+        weighted[root] = weight
+
+
+def v81_priority_roots(firma_adi):
+    profile = v74_company_profile(firma_adi)
+    tokens = profile.get("tokens", [])
+    brand_tokens = profile.get("brand_tokens", []) or tokens[:1]
+    groups = v74_expected_groups(firma_adi)
+    weighted = {}
+
+    brand1 = brand_tokens[0] if brand_tokens else ""
+    brand2 = "".join(brand_tokens[:2]) if len(brand_tokens) >= 2 else ""
+    brand2_dash = "-".join(brand_tokens[:2]) if len(brand_tokens) >= 2 else ""
+    token2 = "".join(tokens[:2]) if len(tokens) >= 2 else ""
+    token3 = "".join(tokens[:3]) if len(tokens) >= 3 else ""
+
+    if "shipyard" in groups:
+        bases = []
+        for b in [brand2, brand2_dash, token2, brand1]:
+            if b and b not in bases:
+                bases.append(b)
+        for b in bases:
+            v81_add_root(weighted, b + "shipyard", 180)
+            v81_add_root(weighted, b + "-shipyard", 178)
+            v81_add_root(weighted, b + "shipyards", 172)
+            v81_add_root(weighted, b + "tersane", 150)
+        for b in [brand2, brand2_dash, token3, token2]:
+            v81_add_root(weighted, b, 132)
+        v81_add_root(weighted, brand1, 35)
+
+    if "marine" in groups:
+        bases = []
+        for b in [brand2, brand2_dash, token2, brand1]:
+            if b and b not in bases:
+                bases.append(b)
+        for b in bases:
+            v81_add_root(weighted, b + "marine", 176)
+            v81_add_root(weighted, b + "-marine", 174)
+            v81_add_root(weighted, b + "maritime", 150)
+        for b in [brand2, brand2_dash, token2]:
+            v81_add_root(weighted, b, 128)
+        v81_add_root(weighted, brand1, 30)
+
+    if "holding" in groups:
+        if brand1:
+            v81_add_root(weighted, brand1 + "holding", 180)
+            v81_add_root(weighted, brand1 + "-holding", 175)
+            v81_add_root(weighted, brand1 + "group", 140)
+            v81_add_root(weighted, brand1, 45)
+        v81_add_root(weighted, token2, 160)
+
+    if "classification" in groups or "loydu" in tokens:
+        v81_add_root(weighted, "turkloydu", 190)
+        v81_add_root(weighted, "turk-loydu", 185)
+
+    for b, w in [(token3, 145), (token2, 132), (brand2, 120), (brand2_dash, 118), (brand1, 75)]:
+        v81_add_root(weighted, b, w)
+
+    return [r for r, _ in sorted(weighted.items(), key=lambda x: x[1], reverse=True)]
+
+
+def v81_priority_domain_candidates(firma_adi):
+    roots = v81_priority_roots(firma_adi)
+    tlds = [".com", ".com.tr", ".org", ".net", ".tr", ".global"]
+    paths = ["", "/", "/tr", "/tr/", "/en", "/en/"]
+    adaylar = []
+    for root in roots:
+        for tld in tlds:
+            for host in [f"https://www.{root}{tld}", f"https://{root}{tld}"]:
+                for path in paths:
+                    adaylar.append(host + path)
+    return list(dict.fromkeys(adaylar))[:240]
+
+
+def v81_is_bad_result_url(url):
+    d = domain_al(url).replace("www.", "").lower()
+    return any(d == bad or d.endswith("." + bad) for bad in V81_BAD_RESULT_DOMAINS)
+
+
+def v81_official_score(url, firma_adi, text=""):
+    if not url or v72_url_kotu_mu(url) or v81_is_bad_result_url(url):
+        return -120
+    root = v72_domain_root(url)
+    roots = v81_priority_roots(firma_adi)
+    score = v77_official_candidate_score(url, firma_adi, text)
+    low_text = turkce_karakter_temizle(str(text or "").lower()[:30000])
+    root_flat = root.replace("-", "")
+
+    for idx, r in enumerate(roots[:12]):
+        rf = r.replace("-", "")
+        if root_flat == rf:
+            score += 95 - min(idx * 4, 35)
+            break
+        if len(rf) >= 6 and (rf in root_flat or root_flat in rf):
+            score += 62 - min(idx * 3, 25)
+            break
+
+    for group in v74_expected_groups(firma_adi):
+        cfg = V74_SECTOR_GROUPS[group]
+        if v74_text_has_any(low_text, cfg["needles"]):
+            score += 28
+        if v74_text_has_any(low_text, cfg["negative"]):
+            score -= 85
+
+    if any(x in low_text for x in ["official", "resmi", "contact", "iletisim", "iletişim", "shipyard", "tersane", "marine"]):
+        score += 12
+    return score
+
+
+def v81_active_site_score(url, firma_adi):
+    try:
+        r = guvenli_get(url, timeout=min(v73_mode_limits()["site_timeout"], 5), referer="https://www.google.com/")
+        final_url = normalize_url(getattr(r, "url", url) or url)
+        text = temiz_metin((r.text or "")[:18000]) if r.status_code < 400 else ""
+        score = v81_official_score(final_url, firma_adi, text)
+        alive = r.status_code < 500
+        if r.status_code < 400:
+            score += 22
+        elif r.status_code in [401, 403]:
+            score += 8
+        return {"url": final_url, "score": score, "alive": alive, "text": text}
+    except Exception:
+        return {"url": url, "score": v81_official_score(url, firma_adi, ""), "alive": False, "text": ""}
+
+
+def v81_direct_official_site_bul(firma_adi):
+    scored = []
+    attempts = 0
+    seen_urls = set()
+    for url in v81_priority_domain_candidates(firma_adi):
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        root = v72_domain_root(url)
+
+        # Marka tek basina generic ise ancak tum diger guclu adaylar bittikten sonra degerlendir.
+        if root in V74_GENERIC_ROOTS and v74_expected_groups(firma_adi):
+            continue
+
+        attempts += 1
+        if attempts > 90:
+            break
+
+        s = v81_active_site_score(url, firma_adi)
+        threshold = 120 if v74_expected_groups(firma_adi) else 75
+        if s["score"] >= threshold and (s["alive"] or s["score"] >= threshold + 45):
+            scored.append(s)
+        if len(scored) >= 5:
+            break
+
+    if scored:
+        scored = sorted(scored, key=lambda x: x["score"], reverse=True)
+        return scored[0]["url"]
+    return ""
+
+
+def v81_site_home_from_url(url):
+    u = normalize_url(url)
+    p = urlparse(u)
+    if not p.scheme or not p.netloc:
+        return u
+    return f"{p.scheme}://{p.netloc}/"
+
+
+def v81_search_official_site_bul(firma_adi):
+    firma = firma_adi_temizle(firma_adi)
+    profile = v74_company_profile(firma)
+    roots = v81_priority_roots(firma)[:10]
+    marka = profile.get("marka", "")
+    groups = v74_expected_groups(firma)
+    group_words = " ".join(groups)
+
+    queries = [
+        f'"{firma}" official website',
+        f'"{firma}" contact',
+        f'"{firma}" website',
+        f'{firma} resmi web sitesi',
+        f'{firma} iletişim',
+    ]
+    if group_words:
+        queries.extend([
+            f'"{firma}" {group_words} contact',
+            f'{firma} {group_words} official',
+        ])
+    for root in roots[:5]:
+        queries.append(f'"{firma}" "{root}"')
+    if marka:
+        queries.append(f'{marka} {" ".join(groups)} contact')
+
+    scored = []
+    deadline = time.time() + max(v73_mode_limits()["firma_cap"], 90)
+    for q in list(dict.fromkeys(queries))[:10]:
+        if time.time() > deadline:
+            break
+        try:
+            items = v76_search_result_items(q, limit=12)
+        except Exception:
+            items = []
+        for item in items:
+            url = normalize_url(item.get("url", ""))
+            if not url or v81_is_bad_result_url(url):
+                continue
+            score = v81_official_score(url, firma, item.get("text", ""))
+            if score >= (105 if groups else 62):
+                scored.append({"url": v81_site_home_from_url(url), "score": score, "text": item.get("text", "")})
+
+    if not scored:
+        return ""
+
+    scored = sorted(scored, key=lambda x: x["score"], reverse=True)
+    return scored[0]["url"]
+
+
+def v81_web_reasonable(web_url, firma_adi):
+    if not web_url or v81_is_bad_result_url(web_url):
+        return False
+    root = v72_domain_root(web_url)
+    profile = v74_company_profile(firma_adi)
+    brand = profile.get("marka", "")
+    groups = v74_expected_groups(firma_adi)
+    if groups and root in V74_GENERIC_ROOTS:
+        return False
+    if groups and brand and root == brand and root not in [r.replace("-", "") for r in v81_priority_roots(firma_adi)[:4]]:
+        return False
+    return v81_official_score(web_url, firma_adi, "") >= (55 if groups else 25)
+
+
+def firma_websitesi_bul(firma_adi):
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v81:" + SCAN_MODE + ":" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    direct = v81_direct_official_site_bul(firma_adi_temiz)
+    if direct:
+        WEBSITE_CACHE[cache_key] = direct
+        return direct
+
+    searched = v81_search_official_site_bul(firma_adi_temiz)
+    if searched:
+        WEBSITE_CACHE[cache_key] = searched
+        return searched
+
+    try:
+        previous = V80_FIRMA_WEBSITE_BUL_FINAL(firma_adi_temiz)
+    except Exception:
+        previous = ""
+
+    if previous and v81_web_reasonable(previous, firma_adi_temiz):
+        WEBSITE_CACHE[cache_key] = previous
+        return previous
+
+    WEBSITE_CACHE[cache_key] = previous or ""
+    return previous or ""
+
+
+def v81_extra_contact_urls(web_url, firma_adi="", home_html=""):
+    base = v79_base_url(web_url)
+    domain = domain_al(base).replace("www.", "")
+    paths = [
+        "/public/contact", "/public/contact/", "/contact", "/contact/", "/contacts", "/contacts/",
+        "/contact-us", "/contact-us/", "/en/contact", "/en/contact/", "/en/contact-us", "/en/contact-us/",
+        "/tr/contact", "/tr/contact/", "/tr/iletisim", "/tr/iletisim/", "/tr/iletişim", "/tr/iletişim/",
+        "/iletisim", "/iletisim/", "/iletişim", "/iletişim/", "/bize-ulasin", "/bize-ulasin/",
+        "/locations", "/locations/", "/offices", "/offices/", "/yerleskeler", "/tr/yerleskeler",
+        "/adresler", "/tr/adresler"
+    ]
+    urls = []
+    for path in paths:
+        urls.append(base + path)
+
+    if domain:
+        for legacy in [f"https://old.{domain}", f"https://www.old.{domain}"]:
+            for path in ["/contact", "/contact/", "/iletisim", "/iletisim/", "/contacts", "/contacts/"]:
+                urls.append(legacy + path)
+
+    try:
+        urls.extend(v80_candidate_contact_urls(web_url, home_html, firma_adi))
+    except Exception:
+        pass
+
+    final = []
+    seen = set()
+    for u in sorted(urls, key=v80_url_contact_score, reverse=True):
+        u = normalize_url(u)
+        if not url_gecerli_mi(u):
+            continue
+        if not v80_same_brand_or_domain(u, web_url, firma_adi):
+            continue
+        if u not in seen:
+            seen.add(u)
+            final.append(u)
+    return final[:65]
+
+
+def v81_search_contact_completion(web_url, firma_adi):
+    domain = domain_al(web_url).replace("www.", "")
+    domain_root = v72_domain_root(web_url)
+    firma = firma_adi_temizle(firma_adi)
+    roots = v81_priority_roots(firma)[:8]
+    queries = [
+        f'site:{domain} "{firma}" email phone',
+        f'site:{domain} "{firma}" e-mail telefon',
+        f'site:{domain} "{firma}" "T:" "E:"',
+        f'site:{domain} "{firma}" filetype:pdf',
+        f'"{firma}" "{domain_root}" "info@"',
+        f'"{firma}" "{domain_root}" "Phone"',
+        f'"{firma}" "{domain_root}" "E-mail"',
+        f'"{firma}" contact details',
+        f'"{firma}" iletişim bilgileri',
+    ]
+    for r in roots[:5]:
+        queries.extend([
+            f'"{firma}" "{r}" "email"',
+            f'"{firma}" "{r}" "telefon"',
+        ])
+    if domain:
+        queries.extend([
+            f'site:old.{domain} "{firma}"',
+            f'site:old.{domain} contact',
+        ])
+
+    mailler, telefonlar, links = [], [], []
+    pdf_seen = set()
+
+    for q in list(dict.fromkeys(queries))[:max(v80_limits()["search_queries"], 10)]:
+        try:
+            items = v76_search_result_items(q, limit=12)
+        except Exception:
+            items = []
+        for item in items:
+            url = normalize_url(item.get("url", ""))
+            text = item.get("text", "")
+            blob = " ".join([text, url])
+
+            m, t = v79_extract_contacts(blob)
+            accepted_m = v79_filter_mails(m, web_url, firma)
+            if accepted_m:
+                mailler.extend(accepted_m)
+            if v80_same_brand_or_domain(url, web_url, firma, text) or accepted_m:
+                telefonlar.extend(t)
+                if url and not v81_is_bad_result_url(url):
+                    links.append(url)
+
+            low_url = url.lower()
+            if (".pdf" in low_url or "/api/file/" in low_url or "/uploads/" in low_url or "/docs/" in low_url) and url not in pdf_seen:
+                pdf_seen.add(url)
+                if len(pdf_seen) <= v80_limits()["pdfs"] + 2:
+                    pdata = v80_extract_pdf_contacts(url, web_url, firma)
+                    mailler.extend(pdata.get("mailler", []))
+                    telefonlar.extend(pdata.get("telefonlar", []))
+
+    for link in sorted(list(dict.fromkeys(links)), key=v80_url_contact_score, reverse=True)[:10]:
+        try:
+            if ".pdf" in link.lower():
+                pdata = v80_extract_pdf_contacts(link, web_url, firma)
+                mailler.extend(pdata.get("mailler", []))
+                telefonlar.extend(pdata.get("telefonlar", []))
+            else:
+                data = v79_fetch_contact_page(link, web_url)
+                mailler.extend(data.get("mailler", []))
+                telefonlar.extend(data.get("telefonlar", []))
+        except Exception:
+            continue
+
+    return {
+        "mailler": v79_filter_mails(mailler, web_url, firma),
+        "telefonlar": temiz_telefon_listesi(telefonlar),
+        "links": list(dict.fromkeys(links)),
+    }
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    sonuc = V80_WEBSITE_ILETISIM_BUL_FINAL(web_url, firma_adi=firma_adi)
+    mevcut_mail = [] if sonuc.get("eposta") in ["", None, "Bulunamadi"] else temiz_mail_listesi(str(sonuc.get("eposta", "")).split(","))
+    mevcut_tel = [] if sonuc.get("telefon") in ["", None, "Bulunamadi"] else temiz_telefon_listesi(str(sonuc.get("telefon", "")).split(","))
+
+    if mevcut_mail and mevcut_tel:
+        sonuc["telefon"] = ", ".join(mevcut_tel[:5])
+        sonuc["eposta"] = ", ".join(mevcut_mail[:5])
+        sonuc["durum"] = str(sonuc.get("durum", "")).replace("V80", "V81")
+        return sonuc
+
+    mailler = list(mevcut_mail)
+    telefonlar = list(mevcut_tel)
+    kaynaklar = [] if not sonuc.get("kaynak") else [sonuc.get("kaynak")]
+
+    home_html = ""
+    try:
+        home = v79_fetch_contact_page(web_url, "https://www.google.com/")
+        home_html = home.get("html", "")
+    except Exception:
+        pass
+
+    for u in v81_extra_contact_urls(web_url, firma_adi, home_html)[:max(v80_limits()["static_pages"], 28)]:
+        try:
+            if ".pdf" in u.lower():
+                data = v80_extract_pdf_contacts(u, web_url, firma_adi)
+            else:
+                data = v79_fetch_contact_page(u, web_url)
+            if not data.get("ok"):
+                continue
+            mailler.extend(data.get("mailler", []))
+            telefonlar.extend(data.get("telefonlar", []))
+            kaynaklar.append(u)
+            if v79_filter_mails(mailler, web_url, firma_adi) and temiz_telefon_listesi(telefonlar):
+                break
+        except Exception:
+            continue
+
+    filtered_mail = v79_filter_mails(mailler, web_url, firma_adi)
+    filtered_tel = temiz_telefon_listesi(telefonlar)
+
+    if not filtered_mail or not filtered_tel:
+        search_data = v81_search_contact_completion(web_url, firma_adi)
+        mailler.extend(search_data.get("mailler", []))
+        telefonlar.extend(search_data.get("telefonlar", []))
+        kaynaklar.extend(search_data.get("links", []))
+        filtered_mail = v79_filter_mails(mailler, web_url, firma_adi)
+        filtered_tel = temiz_telefon_listesi(telefonlar)
+
+    if filtered_mail:
+        sonuc["eposta"] = ", ".join(filtered_mail[:5])
+    if filtered_tel:
+        sonuc["telefon"] = ", ".join(filtered_tel[:5])
+    if kaynaklar:
+        sonuc["kaynak"] = list(dict.fromkeys(kaynaklar))[0]
+
+    if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Tamamlandi | V81 structure-aware contact"
+    elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Kismi tamamlandi | V81 structure-aware contact"
+    else:
+        sonuc["durum"] = "Web bulundu, iletisim bulunamadi | V81 structure-aware contact"
+
+    return sonuc
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+    try:
+        time.sleep(random.uniform(0.3, 0.75))
+        web = firma_websitesi_bul(firma_adi)
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V81 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
