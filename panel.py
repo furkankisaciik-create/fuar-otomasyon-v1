@@ -6233,6 +6233,713 @@ def sonuc_guven_skorlari_ekle(sonuc, firma_adi):
 
 
 # ============================================================
+# V75 CONTACT HUNTER OVERRIDES
+# Web dogru bulundugunda mail/telefon kacirmamak icin ek derin contact motoru.
+# ============================================================
+
+V75_CONTACT_PATHS = [
+    "/contact", "/contact/", "/contact-us", "/contact-us/", "/contacts", "/contacts/",
+    "/iletisim", "/iletisim/", "/iletişim", "/iletişim/",
+    "/tr/contact", "/tr/contact/", "/tr/contact-us", "/tr/contact-us/",
+    "/tr/contacts", "/tr/contacts/", "/tr/iletisim", "/tr/iletisim/",
+    "/tr/iletişim", "/tr/iletişim/", "/tr/kurumsal/iletisim", "/tr/kurumsal/iletisim/",
+    "/en/contact", "/en/contact/", "/en/contact-us", "/en/contact-us/",
+    "/en/contacts", "/en/contacts/", "/en/corporate/contact", "/en/corporate/contact/",
+    "/corporate/contact", "/corporate/contact/", "/kurumsal/iletisim", "/kurumsal/iletisim/",
+    "/about/contact", "/about-us/contact", "/company/contact",
+    "/locations", "/locations/", "/offices", "/offices/",
+    "/sitemap.xml"
+]
+
+
+def v75_root_url(web_url):
+    u = normalize_url(web_url)
+    parsed = urlparse(u)
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else u
+
+
+def v75_decode_contact_text(text):
+    t = html_entity_temizle(str(text or ""))
+    try:
+        t = bytes(t, "utf-8").decode("unicode_escape", errors="ignore")
+    except Exception:
+        pass
+    try:
+        t = unquote(t)
+    except Exception:
+        pass
+
+    replacements = {
+        "\\u0040": "@", "\\u002e": ".", "\\x40": "@", "\\x2e": ".",
+        "&#64;": "@", "&#x40;": "@", "&commat;": "@",
+        "[at]": "@", "(at)": "@", " at ": "@",
+        "[dot]": ".", "(dot)": ".", " dot ": ".",
+    }
+    low = t
+    for a, b in replacements.items():
+        low = re.sub(re.escape(a), b, low, flags=re.I)
+    return low.replace("\\/", "/")
+
+
+def v75_contact_url_adaylari(web_url):
+    web_url = normalize_url(web_url)
+    root = v75_root_url(web_url)
+    parsed = urlparse(web_url)
+    adaylar = [web_url, root, root + "/"]
+
+    # URL /tr veya /en ile geliyorsa ayni dil altinda contact varyasyonlarini one al.
+    parts = [p for p in parsed.path.split("/") if p]
+    if parts and parts[0].lower() in ["tr", "en", "de", "fr"]:
+        lang = "/" + parts[0].lower()
+        for p in V75_CONTACT_PATHS:
+            if not p.startswith(lang + "/") and p not in ["/sitemap.xml"]:
+                adaylar.append(root + lang + p)
+
+    for p in V75_CONTACT_PATHS:
+        adaylar.append(root + p)
+
+    # Eski motorun buldugu HTML linkleri ve sitemap sonuclari da korunsun.
+    try:
+        adaylar.extend(contact_url_adaylari_uret(web_url))
+    except Exception:
+        pass
+
+    final, seen = [], set()
+    for u in adaylar:
+        u = normalize_url(u)
+        if not url_gecerli_mi(u):
+            continue
+        if not v72_same_site(u, root):
+            continue
+        if u not in seen:
+            seen.add(u)
+            final.append(u)
+    return final[:36]
+
+
+def v75_extract_contacts_from_blob(blob):
+    blob = v75_decode_contact_text(blob)
+    mailler = []
+    telefonlar = []
+
+    try:
+        mailler.extend(cloudflare_mailleri_ayikla(blob))
+    except Exception:
+        pass
+
+    mailler.extend(eposta_ayikla(blob))
+    mailler.extend(mail_label_yakinindan_ayikla(blob))
+
+    # +90 (312) 592 10 00, +90-312-266-35-50, 0216 395 75 75 gibi formatlar.
+    phone_patterns = [
+        r"\+90[\s\-\.\(\)]{0,4}\d{3}[\s\-\.\)]{0,4}\d{3}[\s\-\.]{0,3}\d{2}[\s\-\.]{0,3}\d{2}",
+        r"0[\s\-\.\(\)]{0,4}\d{3}[\s\-\.\)]{0,4}\d{3}[\s\-\.]{0,3}\d{2}[\s\-\.]{0,3}\d{2}",
+        r"\+\d{1,3}[\s\-\.\(\)]{0,4}\d{2,4}[\s\-\.\)]{0,4}\d{3,4}[\s\-\.]{0,3}\d{2,4}[\s\-\.]{0,3}\d{2,4}",
+    ]
+    for p in phone_patterns:
+        telefonlar.extend(re.findall(p, blob, flags=re.I))
+
+    telefonlar.extend(telefon_label_yakinindan_ayikla(blob))
+    telefonlar.extend(telefon_ayikla(blob))
+    telefonlar.extend(whatsapp_telefonlari_ayikla(blob))
+
+    return temiz_mail_listesi(mailler), temiz_telefon_listesi(telefonlar)
+
+
+def v75_attr_and_script_blob(html):
+    parts = [html or ""]
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+        for tag in soup.find_all(True):
+            for attr in [
+                "href", "content", "data-email", "data-mail", "data-phone", "data-tel",
+                "aria-label", "title", "alt", "value", "data-href", "data-url"
+            ]:
+                val = tag.get(attr)
+                if val:
+                    parts.append(str(val))
+        for script in soup.find_all("script"):
+            txt = script.string or script.get_text(" ")
+            if txt:
+                parts.append(txt)
+    except Exception:
+        pass
+    return " ".join(parts)
+
+
+def sayfa_deep_contact_oku(url, referer="https://www.google.com/"):
+    """
+    V75: statik HTML + attribute + script/json + obfuscated mail/tel birlikte okunur.
+    """
+    sonuc = {"mailler": [], "telefonlar": [], "html": "", "text": "", "ok": False}
+
+    try:
+        r = guvenli_get(url, timeout=v73_mode_limits()["contact_timeout"], referer=referer)
+        if r.status_code >= 400:
+            return sonuc
+
+        html = html_entity_temizle(r.text or "")
+        visible_text = temiz_metin(html)
+        blob = " ".join([
+            html,
+            visible_text,
+            attribute_iceriklerini_topla(html),
+            js_json_iletisim_parcalari(html),
+            v75_attr_and_script_blob(html),
+        ])
+
+        mailto_mailler, tel_linkleri = mailto_ve_tel_linklerini_ayikla(html)
+        mailler, telefonlar = v75_extract_contacts_from_blob(blob)
+        mailler.extend(mailto_mailler)
+        telefonlar.extend(tel_linkleri)
+
+        sonuc["mailler"] = temiz_mail_listesi(mailler)
+        sonuc["telefonlar"] = temiz_telefon_listesi(telefonlar)
+        sonuc["html"] = html
+        sonuc["text"] = visible_text
+        sonuc["ok"] = True
+
+    except Exception:
+        pass
+
+    return sonuc
+
+
+def v75_playwright_contact_oku(url):
+    """
+    Dengeli modda bile sadece iletisim bulunamazsa hafif JS render fallback.
+    Firma basina birkac sayfayla sinirli tutulur.
+    """
+    sonuc = {"mailler": [], "telefonlar": [], "html": "", "text": "", "ok": False}
+
+    if not PLAYWRIGHT_AKTIF:
+        return sonuc
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121 Safari/537.36",
+                viewport={"width": 1366, "height": 900},
+                locale="tr-TR"
+            )
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            page.wait_for_timeout(2500)
+
+            try:
+                page.evaluate("""
+                    () => {
+                        const words = ['kabul', 'accept', 'tamam', 'onay', 'allow'];
+                        for (const el of Array.from(document.querySelectorAll('button, a'))) {
+                            const txt = (el.innerText || el.textContent || '').toLowerCase();
+                            if (words.some(w => txt.includes(w))) {
+                                try { el.click(); } catch(e) {}
+                            }
+                        }
+                    }
+                """)
+                page.wait_for_timeout(600)
+            except Exception:
+                pass
+
+            for _ in range(3):
+                try:
+                    page.evaluate("window.scrollBy(0, 900)")
+                except Exception:
+                    pass
+                page.wait_for_timeout(500)
+
+            html = page.content()
+            try:
+                text = page.inner_text("body")
+            except Exception:
+                text = ""
+            browser.close()
+
+        blob = " ".join([html_entity_temizle(html), html_entity_temizle(text), v75_attr_and_script_blob(html)])
+        mailler, telefonlar = v75_extract_contacts_from_blob(blob)
+        mailto_mailler, tel_linkleri = mailto_ve_tel_linklerini_ayikla(html)
+        mailler.extend(mailto_mailler)
+        telefonlar.extend(tel_linkleri)
+
+        sonuc["mailler"] = temiz_mail_listesi(mailler)
+        sonuc["telefonlar"] = temiz_telefon_listesi(telefonlar)
+        sonuc["html"] = html
+        sonuc["text"] = text
+        sonuc["ok"] = True
+    except Exception as e:
+        logging.warning(f"V75 Playwright contact hatasi: {url} - {str(e)}")
+
+    return sonuc
+
+
+def v75_filter_mails_for_company(mailler, web_url, firma_adi):
+    temiz = temiz_mail_listesi(mailler)
+    if not temiz:
+        return []
+
+    uyumlu = [m for m in temiz if v74_mail_site_uyumu(m, web_url, firma_adi)]
+    if uyumlu:
+        return uyumlu[:5]
+
+    # Kurumsal sitede mail domaini siteyle ayni degilse son care: info/contact/sales gibi rol mailleri.
+    root = v72_domain_root(web_url)
+    profile = v74_company_profile(firma_adi)
+    marka = profile.get("marka", "")
+    soft = []
+    for m in temiz:
+        local, dom = m.split("@", 1)
+        mail_root = v72_domain_root(dom)
+        if m.startswith(V72_ROLE_MAIL_PREFIXES) and (root in mail_root or marka in mail_root or marka in local):
+            soft.append(m)
+    return soft[:5]
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    sonuc = {
+        "web_adresi": web_url or "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "Basladi",
+        "hata": ""
+    }
+
+    if not web_url:
+        sonuc["durum"] = "Web sitesi bulunamadi"
+        return sonuc
+
+    web_url = normalize_url(web_url)
+
+    try:
+        tum_mailler = []
+        tum_telefonlar = []
+        kaynaklar = []
+        okunan = 0
+
+        aday_url_listesi = v75_contact_url_adaylari(web_url)
+
+        try:
+            home = sayfa_deep_contact_oku(web_url, referer="https://www.google.com/")
+            if home.get("ok"):
+                okunan += 1
+                tum_mailler.extend(home.get("mailler", []))
+                tum_telefonlar.extend(home.get("telefonlar", []))
+                kaynaklar.append(web_url)
+                aday_url_listesi = [web_url] + v72_html_contact_linkleri(web_url, home.get("html", "")) + aday_url_listesi
+        except Exception:
+            pass
+
+        contact_limit = max(v73_mode_limits()["contact_limit"], 10)
+        seen = set()
+        for idx, u in enumerate(aday_url_listesi[:contact_limit]):
+            if u in seen:
+                continue
+            seen.add(u)
+            try:
+                time.sleep(random.uniform(0.1, 0.35))
+                data = sayfa_deep_contact_oku(u, referer=web_url if idx > 0 else "https://www.google.com/")
+                if not data.get("ok"):
+                    continue
+                okunan += 1
+                if data.get("mailler"):
+                    tum_mailler.extend(data["mailler"])
+                    kaynaklar.append(u)
+                if data.get("telefonlar"):
+                    tum_telefonlar.extend(data["telefonlar"])
+                    kaynaklar.append(u)
+                if v75_filter_mails_for_company(tum_mailler, web_url, firma_adi) and temiz_telefon_listesi(tum_telefonlar):
+                    break
+            except Exception:
+                continue
+
+        # Static okuma yetmezse JS-render contact fallback.
+        temiz_mailler_once = v75_filter_mails_for_company(tum_mailler, web_url, firma_adi)
+        temiz_tel_once = temiz_telefon_listesi(tum_telefonlar)
+        if (not temiz_mailler_once or not temiz_tel_once) and PLAYWRIGHT_AKTIF:
+            for u in list(dict.fromkeys(aday_url_listesi))[:3]:
+                data = v75_playwright_contact_oku(u)
+                if data.get("mailler"):
+                    tum_mailler.extend(data["mailler"])
+                    kaynaklar.append(u)
+                if data.get("telefonlar"):
+                    tum_telefonlar.extend(data["telefonlar"])
+                    kaynaklar.append(u)
+                if v75_filter_mails_for_company(tum_mailler, web_url, firma_adi) and temiz_telefon_listesi(tum_telefonlar):
+                    break
+
+        temiz_mailler = v75_filter_mails_for_company(tum_mailler, web_url, firma_adi)
+        temiz_telefonlar = temiz_telefon_listesi(tum_telefonlar)
+
+        if temiz_mailler:
+            sonuc["eposta"] = ", ".join(temiz_mailler[:5])
+        if temiz_telefonlar:
+            sonuc["telefon"] = ", ".join(temiz_telefonlar[:5])
+
+        sonuc["kaynak"] = list(dict.fromkeys(kaynaklar))[0] if kaynaklar else web_url
+
+        if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+            sonuc["durum"] = f"Tamamlandi | V75 contact sayfa: {okunan}"
+        elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+            sonuc["durum"] = f"Kismi tamamlandi | V75 contact sayfa: {okunan}"
+        else:
+            sonuc["durum"] = f"Web bulundu, iletisim bulunamadi | V75 contact sayfa: {okunan}"
+
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V75 site iletisim hatasi: {web_url} - {str(e)}")
+
+    return sonuc
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+
+    try:
+        time.sleep(random.uniform(0.6, 1.3))
+        web = firma_websitesi_bul(firma_adi)
+
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+
+        web_score = domain_puanla(web, firma_adi, " ".join([sonuc.get("eposta", ""), sonuc.get("telefon", ""), sonuc.get("kaynak", "")]))
+        if web_score < (45 if v74_expected_groups(firma_adi) else 15):
+            sonuc["durum"] = f"Web supheli - manuel kontrol gerekli | Skor: {web_score}"
+            sonuc["manuel_kontrol"] = "Evet"
+
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V75 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
+# V76 SEARCH-SNIPPET CONFIRMATION + CONTACT FALLBACK
+# Resmi site bulunamadiginda arama sonucunu daha akilli kullanir.
+# Resmi site bulundu ama mail/telefon cikmadiysa Bing/DDG snippet ve ayni-domain
+# contact sayfalarini ikinci kaynak gibi tarar.
+# ============================================================
+
+V75_FIRMA_WEBSITE_BUL = firma_websitesi_bul
+V75_WEBSITE_ILETISIM_BUL = websitesinden_iletisim_bul
+
+
+def v76_search_result_items(query, limit=12):
+    items = []
+    urls = [
+        f"https://www.bing.com/search?q={quote_plus(query)}",
+        f"https://duckduckgo.com/html/?q={quote_plus(query)}",
+    ]
+
+    for search_url in urls:
+        try:
+            r = guvenli_get(search_url, timeout=v73_mode_limits()["search_timeout"], referer="https://www.google.com/")
+            if r.status_code >= 400:
+                continue
+
+            soup = BeautifulSoup(r.text or "", "html.parser")
+            for block in soup.select("li.b_algo, div.result, div.web-result, article, div"):
+                a = block.select_one("a[href]")
+                if not a:
+                    continue
+                href = normalize_url(arama_linkini_temizle(a.get("href", "")))
+                if not href or v72_url_kotu_mu(href):
+                    continue
+
+                text = temiz_metin(block.get_text(" "))
+                if not text:
+                    text = temiz_metin(a.get_text(" "))
+                items.append({"url": href, "text": text[:2000]})
+
+                if len(items) >= limit:
+                    break
+        except Exception as e:
+            logging.warning(f"V76 arama sonucu okunamadi: {query} - {str(e)}")
+
+        if len(items) >= limit:
+            break
+
+    final = []
+    seen = set()
+    for item in items:
+        d = domain_al(item["url"])
+        key = d + "|" + item["url"].split("?")[0]
+        if d and key not in seen:
+            seen.add(key)
+            final.append(item)
+        if len(final) >= limit:
+            break
+    return final
+
+
+def v76_exact_domain_fit(url, firma_adi):
+    root = v72_domain_root(url)
+    profile = v74_company_profile(firma_adi)
+    tokens = profile["tokens"]
+    if not root or not tokens:
+        return False
+
+    root_flat = root.replace("-", "")
+    joined2 = "".join(tokens[:2])
+    joined3 = "".join(tokens[:3])
+
+    if len(joined3) >= 7 and joined3 in root_flat:
+        return True
+    if len(joined2) >= 6 and joined2 in root_flat:
+        return True
+
+    # TK Tuzla gibi sector kelimesi domainde olmayabilir ama iki marka tokeni beraber gecerse guclu.
+    brand_tokens = profile["brand_tokens"]
+    if len(brand_tokens) >= 2 and all(t in root_flat for t in brand_tokens[:2]):
+        return True
+
+    # Turk Loydu -> turkloydu.org
+    if "loydu" in tokens and "turk" in tokens and "turkloydu" in root_flat:
+        return True
+
+    return False
+
+
+def v76_result_text_supports_company(item, firma_adi):
+    text = turkce_karakter_temizle((item.get("text", "") + " " + item.get("url", "")).lower())
+    profile = v74_company_profile(firma_adi)
+    tokens = profile["tokens"]
+    if not tokens:
+        return 0
+
+    score = 0
+    for t in tokens[:6]:
+        if t in text:
+            score += 14
+
+    for group in v74_expected_groups(firma_adi):
+        cfg = V74_SECTOR_GROUPS[group]
+        if v74_text_has_any(text, cfg["needles"]):
+            score += 35
+        if v74_text_has_any(text, cfg["negative"]):
+            score -= 80
+
+    if any(w in text for w in ["official", "resmi", "contact", "iletisim", "iletişim", "phone", "email", "e-posta"]):
+        score += 12
+
+    if v76_exact_domain_fit(item.get("url", ""), firma_adi):
+        score += 55
+
+    return score
+
+
+def firma_websitesi_bul(firma_adi):
+    firma_adi_temiz = firma_adi_temizle(firma_adi)
+    if not firma_adi_temiz:
+        return ""
+
+    cache_key = "v76:" + firma_adi_temiz.lower().strip()
+    if cache_key in WEBSITE_CACHE:
+        return WEBSITE_CACHE[cache_key]
+
+    # Once V75/V74 motoru denensin.
+    web = V75_FIRMA_WEBSITE_BUL(firma_adi_temiz)
+    if web:
+        WEBSITE_CACHE[cache_key] = web
+        return web
+
+    queries = [
+        f'"{firma_adi_temiz}" official website',
+        f'"{firma_adi_temiz}" contact',
+        f'{firma_adi_temiz} official site',
+        f'{firma_adi_temiz} website',
+    ]
+
+    groups = v74_expected_groups(firma_adi_temiz)
+    if groups:
+        queries.extend([
+            f'"{firma_adi_temiz}" {" ".join(groups)}',
+            f'{firma_adi_temiz} {" ".join(groups)} contact',
+        ])
+
+    scored = []
+    deadline = time.time() + v73_mode_limits()["firma_cap"]
+    for q in queries[:6]:
+        if time.time() > deadline:
+            break
+        for item in v76_search_result_items(q, limit=10):
+            url = normalize_url(item.get("url", ""))
+            if not url or v72_url_kotu_mu(url):
+                continue
+            score = domain_puanla(url, firma_adi_temiz, item.get("text", ""))
+            score += v76_result_text_supports_company(item, firma_adi_temiz)
+            scored.append({"url": url, "score": score, "text": item.get("text", "")})
+
+    # Direkt domain adayi, sayfa acilmasa bile exact domain fit ise kabul edilebilir.
+    for url in domain_adaylari_uret(firma_adi_temiz)[:40]:
+        if time.time() > deadline:
+            break
+        if not v76_exact_domain_fit(url, firma_adi_temiz):
+            continue
+        score = 70
+        try:
+            checked = aday_site_oku_ve_puanla(url, firma_adi_temiz)
+            score = max(score, checked.get("puan", 0))
+            url = checked.get("url", url) or url
+        except Exception:
+            pass
+        scored.append({"url": url, "score": score, "text": ""})
+
+    if not scored:
+        WEBSITE_CACHE[cache_key] = ""
+        return ""
+
+    scored = sorted(scored, key=lambda x: x.get("score", -100), reverse=True)
+    threshold = 65 if v74_expected_groups(firma_adi_temiz) else 38
+    best = scored[0]
+
+    if best.get("score", -100) >= threshold:
+        WEBSITE_CACHE[cache_key] = best["url"]
+        return best["url"]
+
+    WEBSITE_CACHE[cache_key] = ""
+    return ""
+
+
+def v76_search_contact_fallback(web_url, firma_adi):
+    domain = domain_al(web_url).replace("www.", "")
+    root = v72_domain_root(domain)
+    queries = [
+        f'site:{domain} contact email phone',
+        f'site:{domain} iletişim telefon e-posta',
+        f'"{firma_adi}" "{domain}" email phone',
+        f'"{firma_adi}" "{domain}" iletişim',
+        f'"{firma_adi}" contact phone email',
+    ]
+
+    mailler = []
+    telefonlar = []
+    contact_links = []
+
+    for q in queries[:5]:
+        for item in v76_search_result_items(q, limit=12):
+            url = normalize_url(item.get("url", ""))
+            text = item.get("text", "")
+            if url and v72_same_site(url, web_url) and any(w in turkce_karakter_temizle(url.lower()) for w in V72_CONTACT_WORDS + ("public/contact", "iletisim-formu", "facilities", "yerleskeler")):
+                contact_links.append(url)
+
+            m, t = v75_extract_contacts_from_blob(text)
+            mailler.extend(m)
+            telefonlar.extend(t)
+
+    # Ayni domaindeki arama sonucu contact linklerini gercek sayfa olarak oku.
+    for u in list(dict.fromkeys(contact_links))[:5]:
+        data = sayfa_deep_contact_oku(u, referer=web_url)
+        if data.get("mailler"):
+            mailler.extend(data["mailler"])
+        if data.get("telefonlar"):
+            telefonlar.extend(data["telefonlar"])
+
+    # Snippet ucuncu kaynak olsa bile mail domaini firma/site ile uyumluysa kabul et.
+    filtered_mails = []
+    for m in temiz_mail_listesi(mailler):
+        if v74_mail_site_uyumu(m, web_url, firma_adi):
+            filtered_mails.append(m)
+            continue
+        try:
+            mail_root = v72_domain_root(m.split("@", 1)[1])
+            if root and mail_root and (root == mail_root or root in mail_root or mail_root in root):
+                filtered_mails.append(m)
+        except Exception:
+            pass
+
+    return {
+        "mailler": temiz_mail_listesi(filtered_mails),
+        "telefonlar": temiz_telefon_listesi(telefonlar),
+        "links": list(dict.fromkeys(contact_links)),
+    }
+
+
+def websitesinden_iletisim_bul(web_url, firma_adi=""):
+    sonuc = V75_WEBSITE_ILETISIM_BUL(web_url, firma_adi=firma_adi)
+
+    mevcut_mail = [] if sonuc.get("eposta") in ["", None, "Bulunamadi"] else temiz_mail_listesi(str(sonuc.get("eposta", "")).split(","))
+    mevcut_tel = [] if sonuc.get("telefon") in ["", None, "Bulunamadi"] else temiz_telefon_listesi(str(sonuc.get("telefon", "")).split(","))
+
+    if mevcut_mail and mevcut_tel:
+        sonuc["durum"] = str(sonuc.get("durum", "")).replace("V75", "V76")
+        return sonuc
+
+    fb = v76_search_contact_fallback(web_url, firma_adi)
+
+    mailler = mevcut_mail + fb.get("mailler", [])
+    telefonlar = mevcut_tel + fb.get("telefonlar", [])
+    mailler = temiz_mail_listesi(mailler)
+    telefonlar = temiz_telefon_listesi(telefonlar)
+
+    if mailler:
+        sonuc["eposta"] = ", ".join(mailler[:5])
+    if telefonlar:
+        sonuc["telefon"] = ", ".join(telefonlar[:5])
+
+    if fb.get("links") and (sonuc.get("kaynak") in ["", None] or str(sonuc.get("kaynak")) == "nan"):
+        sonuc["kaynak"] = fb["links"][0]
+
+    if sonuc["eposta"] != "Bulunamadi" and sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Tamamlandi | V76 contact + search fallback"
+    elif sonuc["eposta"] != "Bulunamadi" or sonuc["telefon"] != "Bulunamadi":
+        sonuc["durum"] = "Kismi tamamlandi | V76 contact + search fallback"
+    else:
+        sonuc["durum"] = "Web bulundu, iletisim bulunamadi | V76 contact + search fallback"
+
+    return sonuc
+
+
+def derin_bilgi_bul(firma_adi):
+    sonuc = {
+        "firma_adi": firma_adi,
+        "web_adresi": "Bulunamadi",
+        "telefon": "Bulunamadi",
+        "eposta": "Bulunamadi",
+        "kaynak": "",
+        "durum": "",
+        "hata": ""
+    }
+
+    try:
+        time.sleep(random.uniform(0.5, 1.2))
+        web = firma_websitesi_bul(firma_adi)
+
+        if not web:
+            sonuc["durum"] = "Web sitesi bulunamadi"
+            return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+        iletisim = websitesinden_iletisim_bul(web, firma_adi=firma_adi)
+        sonuc.update(iletisim)
+        sonuc["firma_adi"] = firma_adi
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+    except Exception as e:
+        sonuc["durum"] = "Hata"
+        sonuc["hata"] = str(e)
+        logging.error(f"V76 derin bilgi hatasi: {firma_adi} - {str(e)}")
+        return sonuc_guven_skorlari_ekle(sonuc, firma_adi)
+
+
+# ============================================================
 # ARAYUZ
 # ============================================================
 
