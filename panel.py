@@ -56,7 +56,7 @@ except Exception:
 # SQUAREXPO FUAR MUSTERI OTOMASYONU V3.2
 # ============================================================
 
-APP_TITLE = "Fuar Müşteri Otomasyonu V2.7"
+APP_TITLE = "Fuar Müşteri Otomasyonu V2.8"
 DB_PATH = "fuar_verileri.db"
 MAX_WORKERS_DEFAULT = 3
 REQUEST_TIMEOUT = 10
@@ -124,7 +124,7 @@ def giris_ekrani():
         <div class="login-title">🔐 Güvenli Giriş</div>
         <div class="login-sub">
             Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V2.7
+            Fuar Müşteri Otomasyonu V2.8
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -404,7 +404,7 @@ def kurumsal_banner_goster():
                         <span>FUAR | EXPO | EVENTS</span>
                     </div>
                 </div>
-                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.7</h1>
+                <h1 class="hero-title">Fuar Müşteri<br>Otomasyonu V2.8</h1>
                 <div class="hero-subtitle">
                     Katılımcı listelerini otomatik tarayın; firma web sitesi, e-posta ve telefon bilgilerine hızlıca ulaşın.
                 </div>
@@ -685,7 +685,10 @@ def tabloyu_hazirla():
             mail_guven INTEGER DEFAULT 0,
             telefon_guven INTEGER DEFAULT 0,
             genel_guven INTEGER DEFAULT 0,
-            manuel_kontrol TEXT DEFAULT 'Evet'
+            manuel_kontrol TEXT DEFAULT 'Evet',
+            sirket_tipi TEXT DEFAULT 'Belirsiz',
+            ulke_tahmini TEXT DEFAULT 'Belirsiz',
+            ulke_guven INTEGER DEFAULT 0
         )
     """)
 
@@ -717,7 +720,10 @@ def tabloyu_hazirla():
         "mail_guven": "INTEGER DEFAULT 0",
         "telefon_guven": "INTEGER DEFAULT 0",
         "genel_guven": "INTEGER DEFAULT 0",
-        "manuel_kontrol": "TEXT DEFAULT 'Evet'"
+        "manuel_kontrol": "TEXT DEFAULT 'Evet'",
+        "sirket_tipi": "TEXT DEFAULT 'Belirsiz'",
+        "ulke_tahmini": "TEXT DEFAULT 'Belirsiz'",
+        "ulke_guven": "INTEGER DEFAULT 0"
     }
 
     for kolon, tip in yeni_kolonlar.items():
@@ -755,14 +761,18 @@ def verileri_toplu_kaydet(kayitlar):
             int(k.get("mail_guven", 0) or 0),
             int(k.get("telefon_guven", 0) or 0),
             int(k.get("genel_guven", 0) or 0),
-            k.get("manuel_kontrol", "Evet")
+            k.get("manuel_kontrol", "Evet"),
+            k.get("sirket_tipi", "Belirsiz"),
+            k.get("ulke_tahmini", "Belirsiz"),
+            int(k.get("ulke_guven", 0) or 0)
         ))
 
     c.executemany("""
         INSERT INTO sonuclar 
         (fuar_etiketi, firma_adi, web_adresi, telefon, eposta, kaynak, durum, hata, tarih,
-         web_guven, mail_guven, telefon_guven, genel_guven, manuel_kontrol)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         web_guven, mail_guven, telefon_guven, genel_guven, manuel_kontrol,
+         sirket_tipi, ulke_tahmini, ulke_guven)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
 
     conn.commit()
@@ -843,6 +853,9 @@ def arsiv_klasor_ozeti_getir():
                 SUM(CASE WHEN genel_guven >= 45 AND genel_guven < 75 THEN 1 ELSE 0 END) AS orta_guven,
                 SUM(CASE WHEN genel_guven < 45 OR genel_guven IS NULL THEN 1 ELSE 0 END) AS dusuk_guven,
                 SUM(CASE WHEN manuel_kontrol = 'Evet' THEN 1 ELSE 0 END) AS manuel_kontrol,
+                SUM(CASE WHEN sirket_tipi = 'Yerli' THEN 1 ELSE 0 END) AS yerli_firma,
+                SUM(CASE WHEN sirket_tipi = 'Yabancı' THEN 1 ELSE 0 END) AS yabanci_firma,
+                SUM(CASE WHEN sirket_tipi = 'Belirsiz' OR sirket_tipi IS NULL THEN 1 ELSE 0 END) AS belirsiz_firma,
                 MIN(tarih) AS ilk_tarih,
                 MAX(tarih) AS son_tarih
             FROM sonuclar
@@ -873,6 +886,9 @@ def arsiv_klasor_detay_getir(fuar_etiketi):
                 telefon_guven,
                 genel_guven,
                 manuel_kontrol,
+                sirket_tipi,
+                ulke_tahmini,
+                ulke_guven,
                 tarih
             FROM sonuclar
             WHERE fuar_etiketi = ?
@@ -939,6 +955,9 @@ def arsivi_getir():
                 telefon_guven,
                 genel_guven,
                 manuel_kontrol,
+                sirket_tipi,
+                ulke_tahmini,
+                ulke_guven,
                 tarih
             FROM sonuclar 
             ORDER BY id DESC
@@ -3449,7 +3468,7 @@ def websitesinden_iletisim_bul(web_url):
 
 
 # ============================================================
-# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.7
+# GUVEN SKORU / DOMAIN & CONTACT INTELLIGENCE V2.8
 # ============================================================
 
 def guvenli_int(v, default=0):
@@ -3649,6 +3668,199 @@ def sonuc_guven_skorlari_ekle(sonuc, firma_adi):
 
 
 
+
+# ============================================================
+# YERLI / YABANCI FIRMA AYIRMA MOTORU V2.8
+# ============================================================
+
+COUNTRY_TLD_MAP = {
+    ".com.tr": ("Türkiye", 35), ".tr": ("Türkiye", 30),
+    ".de": ("Almanya", 35), ".it": ("İtalya", 35), ".fr": ("Fransa", 35),
+    ".cn": ("Çin", 40), ".com.cn": ("Çin", 40),
+    ".kr": ("Güney Kore", 35), ".co.kr": ("Güney Kore", 40),
+    ".uk": ("Birleşik Krallık", 30), ".co.uk": ("Birleşik Krallık", 35),
+    ".us": ("Amerika Birleşik Devletleri", 30), ".in": ("Hindistan", 35),
+    ".jp": ("Japonya", 35), ".ru": ("Rusya", 35), ".pl": ("Polonya", 35),
+    ".nl": ("Hollanda", 35), ".be": ("Belçika", 35), ".bg": ("Bulgaristan", 35),
+    ".hu": ("Macaristan", 35), ".pk": ("Pakistan", 35), ".tw": ("Tayvan", 35),
+    ".ae": ("Birleşik Arap Emirlikleri", 35), ".es": ("İspanya", 35)
+}
+
+COUNTRY_NAME_SIGNALS = {
+    "Türkiye": ["türkiye", "turkiye", "turkey"],
+    "Çin": ["china", "çin", "guangzhou", "shenzhen", "ningbo", "dongguan", "foshan", "zhejiang", "hangzhou", "shanghai", "beijing"],
+    "Almanya": ["germany", "almanya", "deutschland"],
+    "İtalya": ["italy", "italia", "italya"],
+    "Fransa": ["france", "fransa"],
+    "Hindistan": ["india", "hindistan"],
+    "Güney Kore": ["south korea", "korea", "kore"],
+    "Birleşik Krallık": ["united kingdom", "uk", "england", "ingiltere"],
+    "Amerika Birleşik Devletleri": ["united states", "usa", "america", "amerika"],
+    "Bulgaristan": ["bulgaria", "bulgaristan"],
+    "Belçika": ["belgium", "belçika"],
+    "Hollanda": ["netherlands", "hollanda"],
+    "İspanya": ["spain", "ispanya"],
+    "Tayvan": ["taiwan", "tayvan"],
+    "Pakistan": ["pakistan"],
+    "Rusya": ["russia", "rusya"],
+    "Japonya": ["japan", "japonya"],
+    "Macaristan": ["hungary", "macaristan"],
+    "Ukrayna": ["ukraine", "ukrayna"],
+    "Birleşik Arap Emirlikleri": ["united arab emirates", "uae", "dubai"]
+}
+
+TURKISH_COMPANY_SIGNALS = [
+    " a.ş", " a.s", " aş", " anonim", " limited şirketi", " limited sirketi",
+    " ltd şti", " ltd sti", " ltd. şti", " ltd. sti", " sanayi", " san.",
+    " ticaret", " tic.", " iç ve dış", " ic ve dis", " dış ticaret", " dis ticaret",
+    " kozmetik", " makina", " makine", " kimya", " ambalaj", " gıda", " gida",
+    " medikal", " sağlık", " saglik", " tekstil", " plastik"
+]
+
+FOREIGN_COMPANY_SIGNALS = {
+    "Çin": [" co., ltd", " co ltd", " technology co", "guangzhou", "shenzhen", "ningbo", "dongguan", "zhejiang"],
+    "Almanya": [" gmbh", " ag "],
+    "İtalya": [" s.r.l", " srl", " s.p.a", " spa "],
+    "Amerika Birleşik Devletleri": [" llc", " inc", " corp", " corporation"],
+    "Hindistan": [" pvt ltd", " private limited"],
+    "Birleşik Krallık": [" ltd", " limited"],
+    "Güney Kore": [" co ltd", " co., ltd"],
+    "Fransa": [" s.a.", " sas "]
+}
+
+
+def domain_ulke_sinyali(web_url):
+    if not web_url or web_url == "Bulunamadi":
+        return None, 0
+    d = domain_al(web_url).lower()
+    if not d:
+        return None, 0
+    for tld, (country, score) in sorted(COUNTRY_TLD_MAP.items(), key=lambda x: len(x[0]), reverse=True):
+        if d.endswith(tld):
+            return country, score
+    return None, 0
+
+
+def telefon_ulke_sinyali(telefon):
+    if not telefon or telefon == "Bulunamadi":
+        return None, 0
+    tel = str(telefon)
+    rakam = re.sub(r"\D", "", tel)
+    if tel.strip().startswith("+90") or rakam.startswith("90") or (len(rakam) == 11 and rakam.startswith("0")):
+        return "Türkiye", 40
+    prefix_map = {"86": "Çin", "49": "Almanya", "39": "İtalya", "33": "Fransa", "91": "Hindistan", "82": "Güney Kore", "44": "Birleşik Krallık", "1": "Amerika Birleşik Devletleri", "81": "Japonya", "7": "Rusya", "34": "İspanya", "31": "Hollanda", "32": "Belçika", "359": "Bulgaristan", "971": "Birleşik Arap Emirlikleri"}
+    for prefix, country in sorted(prefix_map.items(), key=lambda x: len(x[0]), reverse=True):
+        if tel.strip().startswith("+" + prefix) or rakam.startswith(prefix):
+            return country, 30
+    return None, 0
+
+
+def metinden_ulke_sinyali(text):
+    if not text:
+        return None, 0
+    low = turkce_karakter_temizle(str(text).lower())
+    best_country, best_score = None, 0
+    for country, signals in COUNTRY_NAME_SIGNALS.items():
+        for sig in signals:
+            sig_low = turkce_karakter_temizle(sig.lower())
+            if re.search(r"\b" + re.escape(sig_low) + r"\b", low):
+                score = 50 if country == "Türkiye" else 45
+                if score > best_score:
+                    best_country, best_score = country, score
+    return best_country, best_score
+
+
+def unvandan_ulke_sinyali(firma_adi):
+    if not firma_adi:
+        return None, 0
+    low = " " + turkce_karakter_temizle(str(firma_adi).lower()) + " "
+    tr_score = 0
+    for sig in TURKISH_COMPANY_SIGNALS:
+        if turkce_karakter_temizle(sig.lower()) in low:
+            tr_score += 10
+    if tr_score >= 15:
+        return "Türkiye", min(55, tr_score)
+
+    best_country, best_score = None, 0
+    for country, signals in FOREIGN_COMPANY_SIGNALS.items():
+        score = 0
+        for sig in signals:
+            if turkce_karakter_temizle(sig.lower()) in low:
+                score += 14
+        if score > best_score:
+            best_country, best_score = country, score
+    if best_country:
+        return best_country, min(50, best_score)
+    return None, 0
+
+
+def mail_domain_ulke_sinyali(eposta):
+    if not eposta or eposta == "Bulunamadi":
+        return None, 0
+    mails = temiz_mail_listesi(str(eposta).split(","))
+    scores = {}
+    for mail in mails:
+        domain = mail.split("@")[-1].lower().strip()
+        country, score = domain_ulke_sinyali("https://" + domain)
+        if country:
+            scores[country] = scores.get(country, 0) + max(15, score - 10)
+    if not scores:
+        return None, 0
+    country = max(scores, key=scores.get)
+    return country, min(45, scores[country])
+
+
+def sirket_tipi_ulke_tahmin_et(firma_adi, web_adresi="", telefon="", eposta="", kaynak_text=""):
+    country_scores = {}
+
+    def add(country, score):
+        if country and score > 0:
+            country_scores[country] = country_scores.get(country, 0) + score
+
+    for c, s in [
+        metinden_ulke_sinyali(firma_adi),
+        metinden_ulke_sinyali(kaynak_text),
+        unvandan_ulke_sinyali(firma_adi),
+        domain_ulke_sinyali(web_adresi),
+        telefon_ulke_sinyali(telefon),
+        mail_domain_ulke_sinyali(eposta),
+    ]:
+        add(c, s)
+
+    if not country_scores:
+        return {"sirket_tipi": "Belirsiz", "ulke_tahmini": "Belirsiz", "ulke_guven": 0}
+
+    best_country = max(country_scores, key=country_scores.get)
+    ulke_guven = guvenli_int(min(100, country_scores[best_country]))
+
+    if best_country == "Türkiye" and ulke_guven >= 30:
+        tip = "Yerli"
+    elif best_country != "Türkiye" and ulke_guven >= 30:
+        tip = "Yabancı"
+    else:
+        tip = "Belirsiz"
+
+    return {"sirket_tipi": tip, "ulke_tahmini": best_country, "ulke_guven": ulke_guven}
+
+
+def sonuc_ulke_bilgisi_ekle(sonuc, firma_adi):
+    try:
+        kaynak_text = " ".join([str(sonuc.get("kaynak", "")), str(sonuc.get("web_adresi", "")), str(sonuc.get("durum", ""))])
+        tahmin = sirket_tipi_ulke_tahmin_et(firma_adi, sonuc.get("web_adresi", ""), sonuc.get("telefon", ""), sonuc.get("eposta", ""), kaynak_text)
+        sonuc["sirket_tipi"] = tahmin["sirket_tipi"]
+        sonuc["ulke_tahmini"] = tahmin["ulke_tahmini"]
+        sonuc["ulke_guven"] = tahmin["ulke_guven"]
+        durum = sonuc.get("durum", "")
+        if "Tip:" not in durum:
+            sonuc["durum"] = f"{durum} | Tip: {tahmin['sirket_tipi']} | Ülke: {tahmin['ulke_tahmini']} %{tahmin['ulke_guven']}"
+    except Exception:
+        sonuc["sirket_tipi"] = "Belirsiz"
+        sonuc["ulke_tahmini"] = "Belirsiz"
+        sonuc["ulke_guven"] = 0
+    return sonuc
+
+
+
 def derin_bilgi_bul(firma_adi):
     sonuc = {
         "firma_adi": firma_adi,
@@ -3693,7 +3905,7 @@ def derin_bilgi_bul(firma_adi):
 
 
 # ============================================================
-# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.7
+# MERKEZI KAYNAK NORMALIZASYON MOTORU V2.8
 # ============================================================
 
 def firma_adi_standartlastir(firma):
@@ -4223,7 +4435,7 @@ def pdf_adaylari_son_temizle(adaylar):
 
 def pdf_firmalari_oku(pdf_file):
     """
-    PDF firma çıkarma motoru V2.7.
+    PDF firma çıkarma motoru V2.8.
     - Önce tabloları okur.
     - Sonra düz metin satırlarını okur.
     - Stand/salon/ülke/adres/web/mail/telefon kuyruklarını temizler.
@@ -4270,7 +4482,7 @@ def pdf_firmalari_oku(pdf_file):
 
 def excel_firmalari_oku(excel_file):
     """
-    Excel firma çıkarma motoru V2.7.
+    Excel firma çıkarma motoru V2.8.
     Firma/Company/Exhibitor içeren kolonu otomatik bulur.
     Bulamazsa firma benzeri içerik puanı en yüksek kolonu seçer.
     """
@@ -4931,17 +5143,29 @@ if not df_klasorler.empty:
         c4.metric("Telefon Bulunan", tel_bulunan)
         c5.metric("Manuel Kontrol", manuel)
 
+        if "sirket_tipi" in df_detay.columns:
+            y1, y2, y3 = st.columns(3)
+            y1.metric("Yerli Firma", int((df_detay["sirket_tipi"].fillna("") == "Yerli").sum()))
+            y2.metric("Yabancı Firma", int((df_detay["sirket_tipi"].fillna("") == "Yabancı").sum()))
+            y3.metric("Belirsiz", int((df_detay["sirket_tipi"].fillna("") == "Belirsiz").sum()))
+
         st.markdown("### 📌 Klasör Detayı")
 
         filtre = st.selectbox(
             "Filtre",
-            ["Tümü", "Web bulunamayanlar", "Mail/telefon eksik", "Düşük güven", "Manuel kontrol gerekenler"],
+            ["Tümü", "Yerli firmalar", "Yabancı firmalar", "Belirsiz ülke/tip", "Web bulunamayanlar", "Mail/telefon eksik", "Düşük güven", "Manuel kontrol gerekenler"],
             index=0
         )
 
         df_goster = df_detay.copy()
 
-        if filtre == "Web bulunamayanlar":
+        if filtre == "Yerli firmalar":
+            df_goster = df_goster[df_goster["sirket_tipi"].fillna("") == "Yerli"]
+        elif filtre == "Yabancı firmalar":
+            df_goster = df_goster[df_goster["sirket_tipi"].fillna("") == "Yabancı"]
+        elif filtre == "Belirsiz ülke/tip":
+            df_goster = df_goster[df_goster["sirket_tipi"].fillna("").isin(["", "Belirsiz"])]
+        elif filtre == "Web bulunamayanlar":
             df_goster = df_goster[df_goster["web_adresi"].fillna("").isin(["", "Bulunamadi"])]
         elif filtre == "Mail/telefon eksik":
             df_goster = df_goster[
@@ -5055,6 +5279,6 @@ with st.expander("🧯 Son Hatalar / Sistem Loglari"):
 
 st.markdown("""
 <div class="footer-note">
-    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.7
+    Perge Mimarlık & Squarexpo iş birliği ile geliştirildi ❤️ Fuar Müşteri Otomasyonu V2.8
 </div>
 """, unsafe_allow_html=True)
