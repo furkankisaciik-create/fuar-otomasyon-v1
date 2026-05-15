@@ -10457,6 +10457,24 @@ V86_DIRECTORY_HINTS = {
 }
 
 
+V86_BUSINESS_HINTS = {
+    "electric": ["electric", "electrical", "elektrik", "elektronik", "power", "energy", "automation"],
+    "electrik": ["electric", "electrical", "elektrik", "elektronik", "power", "energy", "automation"],
+    "elektrik": ["electric", "electrical", "elektrik", "elektronik", "power", "energy", "automation"],
+    "shipyard": ["shipyard", "shipbuilding", "marine", "maritime", "vessel", "yard", "tersane"],
+    "ship": ["shipyard", "shipbuilding", "marine", "maritime", "vessel", "shipping", "tersane"],
+    "marine": ["marine", "maritime", "ship", "vessel", "shipping", "deniz", "tersane"],
+    "marin": ["marine", "maritime", "ship", "vessel", "shipping", "deniz", "tersane"],
+    "defence": ["defence", "defense", "savunma", "aerospace", "aviation", "electronics"],
+    "defense": ["defence", "defense", "savunma", "aerospace", "aviation", "electronics"],
+    "savunma": ["defence", "defense", "savunma", "aerospace", "aviation", "electronics"],
+    "aviation": ["aviation", "aerospace", "havacilik", "defence", "defense"],
+    "software": ["software", "yazilim", "technology", "teknoloji", "automation"],
+    "yazilim": ["software", "yazilim", "technology", "teknoloji", "automation"],
+    "holding": ["holding", "group", "investment", "energy"],
+}
+
+
 def v86_secret(name, default=""):
     try:
         val = os.environ.get(name, "")
@@ -10480,6 +10498,22 @@ def v86_context_terms():
     if any(x in ctx for x in ["beauty", "cosmetic", "kozmetik"]):
         terms.extend(["cosmetic", "beauty", "exhibitor"])
     return list(dict.fromkeys(terms))
+
+
+def v86_business_terms(firma_adi):
+    blob = turkce_karakter_temizle(str(firma_adi or "").lower())
+    terms = []
+
+    for key, values in V86_BUSINESS_HINTS.items():
+        if key in blob:
+            terms.extend(values)
+
+    for token in v85_company_tokens(firma_adi)[1:4]:
+        if len(token) >= 4:
+            terms.append(token)
+
+    terms.extend(v86_context_terms())
+    return list(dict.fromkeys(turkce_karakter_temizle(str(t).lower()) for t in terms if str(t).strip()))[:14]
 
 
 def v86_search_authority_limits():
@@ -10612,23 +10646,34 @@ def v86_item_is_directory(item):
 
 def v86_search_rank_candidate_score(url, item, firma_adi, query):
     rank = int(item.get("rank", 9) or 9)
-    blob = turkce_karakter_temizle(" ".join([
+    evidence_blob = turkce_karakter_temizle(" ".join([
         str(url or ""),
         item.get("url", ""),
         item.get("title", ""),
-        item.get("text", ""),
-        query
+        item.get("text", "")
     ]).lower())
     tokens = v85_company_tokens(firma_adi)
 
     score = max(0, 165 - (rank - 1) * 22)
 
-    if any(v in blob for v in v85_phrase_variants(firma_adi)):
+    if str(item.get("engine", "")).startswith(("google", "serpapi_google")):
+        score += 35
+        if rank <= 3:
+            score += 35
+
+    if any(v in evidence_blob for v in v85_phrase_variants(firma_adi)):
         score += 95
 
     if tokens:
-        token_hits = sum(1 for t in tokens[:5] if t in blob or normalize_domain_token(t) in normalize_domain_token(blob))
+        token_hits = sum(1 for t in tokens[:5] if t in evidence_blob or normalize_domain_token(t) in normalize_domain_token(evidence_blob))
         score += token_hits * 24
+
+    business_terms = v86_business_terms(firma_adi)
+    if business_terms:
+        business_hits = sum(1 for t in business_terms if t in evidence_blob)
+        score += min(business_hits, 3) * 28
+        if len(tokens) >= 2 and business_hits == 0:
+            score -= 45
 
     if len(tokens) >= 2:
         if not v85_full_name_supported(url, firma_adi, item.get("text", "")):
@@ -10636,14 +10681,16 @@ def v86_search_rank_candidate_score(url, item, firma_adi, query):
         else:
             score += 70
 
-    if v85_text_has_qualifier(blob, firma_adi):
+    if v85_text_has_qualifier(evidence_blob, firma_adi):
         score += 45
 
     if v86_item_is_directory(item) and url != v81_site_home_from_url(item.get("url", "")):
         # Fuar/dizin sonucunun icindeki resmi URL'yi yakaladiysak iyi sinyal.
         score += 45
+    elif v86_item_is_directory(item):
+        score -= 55
 
-    if any(x in blob for x in ["official", "resmi", "website", "web site", "contact", "iletisim", "iletişim"]):
+    if any(x in evidence_blob for x in ["official", "resmi", "website", "web site", "contact", "iletisim", "iletişim"]):
         score += 20
 
     if not v85_web_plausible(url, firma_adi, item.get("text", "")):
@@ -10669,6 +10716,10 @@ def v86_search_rank_authority_site_bul(firma_adi, seconds=28):
     for ctx in v86_context_terms():
         queries.insert(0, f'"{firma}" {ctx} official website')
         queries.insert(1, f'"{firma}" {ctx} contact')
+
+    for term in v86_business_terms(firma)[:4]:
+        queries.append(f'"{firma}" {term} official website')
+        queries.append(f'"{firma}" {term} contact')
 
     if len(tokens) >= 2:
         queries.extend([
