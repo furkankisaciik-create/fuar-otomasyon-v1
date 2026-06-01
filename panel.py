@@ -66,6 +66,7 @@ SCAN_MODE = "Dengeli"
 SEARCH_QUERY_LIMIT = 6
 PLAYWRIGHT_FALLBACK_ENABLED = True
 WEBSITE_CACHE = {}
+URL_WEBSITE_HINTS = {}
 
 
 # ============================================================
@@ -469,6 +470,9 @@ logging.basicConfig(
 if "ana_liste" not in st.session_state:
     st.session_state["ana_liste"] = []
 
+if "url_website_hints" not in st.session_state:
+    st.session_state["url_website_hints"] = {}
+
 if "son_hatalar" not in st.session_state:
     st.session_state["son_hatalar"] = []
 
@@ -514,6 +518,34 @@ def firma_adi_temizle(text):
     text = text.replace("\xa0", " ").strip()
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def url_website_hint_key(firma_adi):
+    return firma_adi_temizle(firma_adi).lower().strip()
+
+
+def url_website_hint_kaydet(firma_adi, web_url):
+    firma = firma_adi_temizle(firma_adi)
+    web = normalize_url(web_url)
+    if not firma or not web or istenmeyen_link_mi(web):
+        return
+    key = url_website_hint_key(firma)
+    URL_WEBSITE_HINTS[key] = web
+    try:
+        st.session_state.setdefault("url_website_hints", {})[key] = web
+    except Exception:
+        pass
+
+
+def url_website_hint_getir(firma_adi):
+    key = url_website_hint_key(firma_adi)
+    try:
+        web = st.session_state.get("url_website_hints", {}).get(key, "")
+        if web:
+            return normalize_url(web)
+    except Exception:
+        pass
+    return normalize_url(URL_WEBSITE_HINTS.get(key, ""))
 
 
 def domain_al(url):
@@ -1971,6 +2003,86 @@ def maktek_katilimci_listesi_cek(url, progress_callback=None):
 
 
 
+def metalexpo_site_home(web_url):
+    try:
+        u = normalize_url(web_url)
+        p = urlparse(u)
+        if not p.scheme or not p.netloc:
+            return ""
+        return f"{p.scheme}://{p.netloc}/"
+    except Exception:
+        return ""
+
+
+def metalexpo_firma_adi_temizle(text):
+    t = firma_adi_temizle(text)
+    t = re.split(r"\bHALL\b|\bSALON\b|\bSTAND\b|\bBOOTH\b", t, flags=re.IGNORECASE)[0]
+    t = re.sub(r"\s+", " ", t).strip(" -|")
+    return t
+
+
+def metalexpo_katilimci_listesi_cek(url, progress_callback=None):
+    """
+    Metal Expo sayfasi firma adini ve resmi site linkini ayni anchor icinde verir:
+    FIRMA ADI HALL 7 / 7C-8 -> href resmi web sitesi.
+    Bu adaptor genel HTML temizleyiciden once calisir ve web sitesi ipuclarini da saklar.
+    """
+    baslangic = time.time()
+    url = normalize_url(url)
+
+    def bildir(adim, bulunan=0):
+        if progress_callback:
+            try:
+                progress_callback({
+                    "adim": adim,
+                    "sayfa_no": 1,
+                    "toplam_sayfa": 1,
+                    "bulunan": bulunan,
+                    "gecen": int(time.time() - baslangic)
+                })
+            except Exception:
+                pass
+
+    bildir("METAL EXPO sayfasi okunuyor...", 0)
+
+    r = guvenli_get(url, timeout=REQUEST_TIMEOUT, referer="https://www.google.com/")
+    if r.status_code >= 400:
+        raise Exception(f"METAL EXPO HTTP {r.status_code} hatasi alindi.")
+
+    soup = BeautifulSoup(r.text or "", "html.parser")
+    firmalar = []
+
+    for a in soup.find_all("a", href=True):
+        text = firma_adi_temizle(a.get_text(" "))
+        if not re.search(r"\bHALL\s+\d+", text, flags=re.IGNORECASE):
+            continue
+
+        firma = metalexpo_firma_adi_temizle(text)
+        if not firma or len(firma) < 2 or len(firma) > 110:
+            continue
+
+        firmalar.append(firma)
+
+        href = normalize_url(a.get("href", ""), base_url=url)
+        home = metalexpo_site_home(href)
+        if home and not istenmeyen_link_mi(home):
+            url_website_hint_kaydet(firma, home)
+
+        if len(firmalar) % 25 == 0:
+            bildir("METAL EXPO firmalari okunuyor...", len(set(x.lower() for x in firmalar)))
+
+    final = []
+    seen = set()
+    for f in firmalar:
+        key = f.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            final.append(f)
+
+    bildir("METAL EXPO katilimci cekimi tamamlandi.", len(final))
+    return final
+
+
 # ============================================================
 # EVRENSEL URL MOTORLARI
 # ============================================================
@@ -2389,6 +2501,11 @@ def evrensel_url_firma_cek(url, progress_callback=None):
         if progress_callback:
             progress_callback({"adim": "MAKTEK adaptörü seçildi.", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
         firmalar = maktek_katilimci_listesi_cek(url, progress_callback=progress_callback)
+
+    elif "metalexpo.com.tr" in url_l:
+        if progress_callback:
+            progress_callback({"adim": "METAL EXPO adaptoru secildi.", "sayfa_no": 0, "toplam_sayfa": 0, "bulunan": 0, "gecen": 0})
+        firmalar = metalexpo_katilimci_listesi_cek(url, progress_callback=progress_callback)
 
     # 2) Genel pagination motoru
     if not firmalar:
@@ -10760,6 +10877,11 @@ def firma_websitesi_bul(firma_adi):
         web = normalize_url(archive_complete.get("web_adresi", ""))
         WEBSITE_CACHE[cache_key] = web
         return web
+
+    hinted_web = url_website_hint_getir(firma_adi_temiz)
+    if hinted_web and v85_web_plausible(hinted_web, firma_adi_temiz):
+        WEBSITE_CACHE[cache_key] = hinted_web
+        return hinted_web
 
     ranked = v86_search_rank_authority_site_bul(
         firma_adi_temiz,
