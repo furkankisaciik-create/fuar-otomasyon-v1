@@ -11,6 +11,7 @@ import time
 import io
 import random
 import logging
+import hmac
 from datetime import datetime, timedelta
 import concurrent.futures
 import pdfplumber
@@ -84,21 +85,83 @@ st.set_page_config(
 # GIRIS SISTEMI
 # ============================================================
 
-LOGIN_USERNAME = "perge"
-LOGIN_PASSWORD = "perge2026"
+def auth_secret_get(name, default=""):
+    value = os.environ.get(name, "")
+    if value:
+        return str(value)
+
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        pass
+
+    try:
+        auth_config = st.secrets.get("auth", {})
+        short_name = name.removeprefix("PANEL_").lower()
+        if short_name in auth_config:
+            return str(auth_config[short_name])
+    except Exception:
+        pass
+
+    return str(default)
+
+
+def auth_int_get(name, default):
+    try:
+        return int(auth_secret_get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def auth_config_getir():
+    return {
+        "username": auth_secret_get("PANEL_USERNAME"),
+        "password": auth_secret_get("PANEL_PASSWORD"),
+        "session_timeout_minutes": max(5, auth_int_get("PANEL_SESSION_TIMEOUT_MINUTES", 480)),
+        "max_failed_attempts": max(3, auth_int_get("PANEL_MAX_FAILED_ATTEMPTS", 5)),
+        "lock_seconds": max(30, auth_int_get("PANEL_LOGIN_LOCK_SECONDS", 90)),
+    }
+
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
+if "auth_last_activity" not in st.session_state:
+    st.session_state["auth_last_activity"] = 0.0
+if "login_failed_attempts" not in st.session_state:
+    st.session_state["login_failed_attempts"] = 0
+if "login_locked_until" not in st.session_state:
+    st.session_state["login_locked_until"] = 0.0
+
+
+def auth_oturumunu_kontrol_et():
+    if not st.session_state.get("authenticated", False):
+        return False
+
+    config = auth_config_getir()
+    now = time.time()
+    last_activity = float(st.session_state.get("auth_last_activity", 0.0) or 0.0)
+    timeout_seconds = config["session_timeout_minutes"] * 60
+
+    if last_activity and now - last_activity > timeout_seconds:
+        st.session_state["authenticated"] = False
+        st.session_state["auth_last_activity"] = 0.0
+        return False
+
+    st.session_state["auth_last_activity"] = now
+    return True
 
 
 def giris_ekrani():
+    config = auth_config_getir()
+
     st.markdown("""
     <style>
     .login-wrap {
         max-width: 480px;
-        margin: 80px auto;
+        margin: 80px auto 18px auto;
         padding: 34px;
-        border-radius: 24px;
+        border-radius: 8px;
         background: linear-gradient(135deg, rgba(15,23,42,0.98), rgba(30,41,59,0.96));
         border: 1px solid rgba(255,255,255,0.08);
         box-shadow: 0 25px 60px rgba(0,0,0,0.35);
@@ -130,24 +193,61 @@ def giris_ekrani():
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1,2,1])
+    col1, col2, col3 = st.columns([1, 2, 1])
 
     with col2:
-        username = st.text_input("Kullanıcı Adı")
-        password = st.text_input("Şifre", type="password")
+        if not config["username"] or not config["password"]:
+            st.error(
+                "Giriş bilgileri yapılandırılmamış. Sunucuda PANEL_USERNAME ve "
+                "PANEL_PASSWORD ortam değişkenlerini veya Streamlit Secrets ayarlarını tanımlayın."
+            )
+            st.stop()
 
-        if st.button("🚀 Giriş Yap", use_container_width=True):
-            if username == LOGIN_USERNAME and password == LOGIN_PASSWORD:
+        now = time.time()
+        locked_until = float(st.session_state.get("login_locked_until", 0.0) or 0.0)
+        remaining = max(0, int(locked_until - now))
+
+        if remaining > 0:
+            st.error(f"Çok fazla hatalı deneme yapıldı. {remaining} saniye sonra tekrar deneyin.")
+            st.stop()
+
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Kullanıcı Adı")
+            password = st.text_input("Şifre", type="password")
+            submitted = st.form_submit_button(
+                "🚀 Giriş Yap",
+                type="primary",
+                use_container_width=True
+            )
+
+        if submitted:
+            username_ok = hmac.compare_digest(username.strip(), config["username"])
+            password_ok = hmac.compare_digest(password, config["password"])
+
+            if username_ok and password_ok:
                 st.session_state["authenticated"] = True
-                st.success("Giriş başarılı.")
+                st.session_state["auth_last_activity"] = time.time()
+                st.session_state["login_failed_attempts"] = 0
+                st.session_state["login_locked_until"] = 0.0
                 st.rerun()
+
+            failures = int(st.session_state.get("login_failed_attempts", 0)) + 1
+            st.session_state["login_failed_attempts"] = failures
+
+            if failures >= config["max_failed_attempts"]:
+                st.session_state["login_failed_attempts"] = 0
+                st.session_state["login_locked_until"] = time.time() + config["lock_seconds"]
+                st.error(
+                    f"Çok fazla hatalı deneme yapıldı. "
+                    f"{config['lock_seconds']} saniye süreyle giriş kilitlendi."
+                )
             else:
                 st.error("Kullanıcı adı veya şifre hatalı.")
 
     st.stop()
 
 
-if not st.session_state["authenticated"]:
+if not auth_oturumunu_kontrol_et():
     giris_ekrani()
 
 
@@ -10943,6 +11043,7 @@ with st.sidebar:
 
     if st.button("🚪 Çıkış Yap", use_container_width=True):
         st.session_state["authenticated"] = False
+        st.session_state["auth_last_activity"] = 0.0
         st.rerun()
 
     st.header("⚙️ Tarama Ayarlari")
