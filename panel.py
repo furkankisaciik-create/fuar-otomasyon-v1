@@ -12,6 +12,7 @@ import io
 import random
 import logging
 import hmac
+import hashlib
 from datetime import datetime, timedelta
 import concurrent.futures
 import pdfplumber
@@ -85,42 +86,32 @@ st.set_page_config(
 # GIRIS SISTEMI
 # ============================================================
 
-def auth_secret_get(name, default=""):
-    value = os.environ.get(name, "")
-    if value:
-        return str(value)
-
-    try:
-        if name in st.secrets:
-            return str(st.secrets[name])
-    except Exception:
-        pass
-
-    try:
-        auth_config = st.secrets.get("auth", {})
-        short_name = name.removeprefix("PANEL_").lower()
-        if short_name in auth_config:
-            return str(auth_config[short_name])
-    except Exception:
-        pass
-
-    return str(default)
+LOGIN_USERNAME_SHA256 = "c54d0bd890e0d7e810a2f39a75a5a547cad3066fd60e78d9277501ad2a9b8267"
+LOGIN_PASSWORD_SALT = "0c44099bd8ea97f248ccaf8284390faea69064d57f8a0c998f22b3f961d4dd37"
+LOGIN_PASSWORD_PBKDF2 = "8f2e5f8714489c8b2e1b69c30f9678fdd9260dd227fa445d3c51552f6932b7e4"
+LOGIN_PASSWORD_ITERATIONS = 600000
 
 
-def auth_int_get(name, default):
-    try:
-        return int(auth_secret_get(name, default))
-    except (TypeError, ValueError):
-        return int(default)
+def auth_hash(value):
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def auth_password_hash(value):
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        str(value or "").encode("utf-8"),
+        bytes.fromhex(LOGIN_PASSWORD_SALT),
+        LOGIN_PASSWORD_ITERATIONS
+    ).hex()
 
 
 def auth_config_getir():
     return {
-        "username": auth_secret_get("PANEL_USERNAME"),
-        "password": auth_secret_get("PANEL_PASSWORD"),
-        "session_timeout_minutes": max(5, auth_int_get("PANEL_SESSION_TIMEOUT_MINUTES", 480)),
-        "max_failed_attempts": max(3, auth_int_get("PANEL_MAX_FAILED_ATTEMPTS", 5)),
-        "lock_seconds": max(30, auth_int_get("PANEL_LOGIN_LOCK_SECONDS", 90)),
+        "username_hash": LOGIN_USERNAME_SHA256,
+        "password_hash": LOGIN_PASSWORD_PBKDF2,
+        "session_timeout_minutes": 480,
+        "max_failed_attempts": 5,
+        "lock_seconds": 90,
     }
 
 
@@ -579,13 +570,6 @@ def giris_ekrani():
         </div>
         """, unsafe_allow_html=True)
 
-        if not config["username"] or not config["password"]:
-            st.error(
-                "Giriş bilgileri yapılandırılmamış. Sunucuda PANEL_USERNAME ve "
-                "PANEL_PASSWORD ortam değişkenlerini veya Streamlit Secrets ayarlarını tanımlayın."
-            )
-            st.stop()
-
         now = time.time()
         locked_until = float(st.session_state.get("login_locked_until", 0.0) or 0.0)
         remaining = max(0, int(locked_until - now))
@@ -620,8 +604,14 @@ def giris_ekrani():
         """, unsafe_allow_html=True)
 
         if submitted:
-            username_ok = hmac.compare_digest(username.strip(), config["username"])
-            password_ok = hmac.compare_digest(password, config["password"])
+            username_ok = hmac.compare_digest(
+                auth_hash(username.strip()),
+                config["username_hash"]
+            )
+            password_ok = hmac.compare_digest(
+                auth_password_hash(password),
+                config["password_hash"]
+            )
 
             if username_ok and password_ok:
                 st.session_state["authenticated"] = True
