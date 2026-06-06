@@ -157,45 +157,428 @@ def giris_ekrani():
 
     st.markdown("""
     <style>
-    .login-wrap {
-        max-width: 480px;
-        margin: 80px auto 18px auto;
-        padding: 34px;
-        border-radius: 8px;
-        background: linear-gradient(135deg, rgba(15,23,42,0.98), rgba(30,41,59,0.96));
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 25px 60px rgba(0,0,0,0.35);
-        color: white;
+    :root {
+        --login-ink: #17212b;
+        --login-muted: #64717d;
+        --login-line: #d9e0e5;
+        --login-surface: #ffffff;
+        --login-canvas: #edf1f3;
+        --login-brand: #123f3a;
+        --login-brand-deep: #0b2d2a;
+        --login-accent: #d7513b;
+        --login-soft: #dcebe7;
     }
 
-    .login-title {
-        font-size: 34px;
+    [data-testid="stAppViewContainer"] {
+        background:
+            linear-gradient(90deg, rgba(18,63,58,0.035) 1px, transparent 1px),
+            linear-gradient(rgba(18,63,58,0.035) 1px, transparent 1px),
+            var(--login-canvas);
+        background-size: 42px 42px;
+    }
+
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    footer {
+        display: none;
+    }
+
+    [data-testid="stMainBlockContainer"],
+    .block-container {
+        width: min(1120px, calc(100% - 40px));
+        max-width: 1120px;
+        padding: 0;
+        margin: 0 auto;
+    }
+
+    .login-topline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 72px;
+        color: var(--login-ink);
+        border-bottom: 1px solid rgba(23,33,43,0.10);
+        margin-bottom: 34px;
+    }
+
+    .login-wordmark {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+    }
+
+    .login-monogram {
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        color: #ffffff;
+        background: var(--login-brand);
+        border-radius: 6px;
+        font-size: 14px;
         font-weight: 800;
-        margin-bottom: 10px;
+    }
+
+    .login-wordmark strong,
+    .login-wordmark span {
+        display: block;
+        letter-spacing: 0;
+    }
+
+    .login-wordmark strong {
+        color: var(--login-ink);
+        font-size: 14px;
+        line-height: 1.2;
+    }
+
+    .login-wordmark span {
+        color: var(--login-muted);
+        font-size: 11px;
+        margin-top: 3px;
+    }
+
+    .login-environment {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #46615d;
+        font-size: 12px;
+        font-weight: 650;
+    }
+
+    .login-environment i {
+        display: block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #2d8c72;
+        box-shadow: 0 0 0 4px rgba(45,140,114,0.12);
+    }
+
+    .login-brand-panel {
+        min-height: 510px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 48px;
+        color: #ffffff;
+        background:
+            linear-gradient(150deg, rgba(255,255,255,0.07), transparent 46%),
+            var(--login-brand);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 8px;
+        box-shadow: 0 24px 60px rgba(23,33,43,0.14);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .login-brand-panel::after {
+        content: "";
+        position: absolute;
+        right: -72px;
+        bottom: 86px;
+        width: 250px;
+        height: 1px;
+        background: rgba(255,255,255,0.22);
+        transform: rotate(-38deg);
+        box-shadow:
+            0 26px 0 rgba(255,255,255,0.12),
+            0 52px 0 rgba(255,255,255,0.07);
+    }
+
+    .login-kicker {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        min-height: 28px;
+        padding: 0 10px;
+        border: 1px solid rgba(255,255,255,0.20);
+        border-radius: 4px;
+        color: #d8ebe6;
+        font-size: 11px;
+        font-weight: 750;
+        text-transform: uppercase;
+    }
+
+    .login-brand-panel h1 {
+        max-width: 560px;
+        margin: 24px 0 16px;
+        color: #ffffff;
+        font-size: clamp(36px, 4.3vw, 58px);
+        line-height: 1.02;
+        letter-spacing: 0;
+        font-weight: 780;
+    }
+
+    .login-brand-panel p {
+        max-width: 520px;
+        margin: 0;
+        color: rgba(255,255,255,0.72);
+        font-size: 16px;
+        line-height: 1.65;
+    }
+
+    .login-brand-footer {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        border: 1px solid rgba(255,255,255,0.13);
+        border-radius: 6px;
+        overflow: hidden;
+        position: relative;
+        z-index: 1;
+    }
+
+    .login-brand-footer div {
+        min-height: 76px;
+        padding: 16px;
+        background: rgba(6,31,29,0.32);
+    }
+
+    .login-brand-footer strong,
+    .login-brand-footer span {
+        display: block;
+        letter-spacing: 0;
+    }
+
+    .login-brand-footer strong {
+        color: #ffffff;
+        font-size: 13px;
+    }
+
+    .login-brand-footer span {
+        color: rgba(255,255,255,0.58);
+        font-size: 11px;
+        margin-top: 5px;
+        line-height: 1.35;
+    }
+
+    .login-form-heading {
+        padding: 22px 6px 20px;
+    }
+
+    .login-form-heading .eyebrow {
+        color: var(--login-accent);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+    }
+
+    .login-form-heading h2 {
+        margin: 10px 0 8px;
+        color: var(--login-ink);
+        font-size: 30px;
+        line-height: 1.14;
+        letter-spacing: 0;
+    }
+
+    .login-form-heading p {
+        margin: 0;
+        color: var(--login-muted);
+        font-size: 14px;
+        line-height: 1.55;
+    }
+
+    [data-testid="stForm"] {
+        padding: 28px;
+        background: var(--login-surface);
+        border: 1px solid var(--login-line);
+        border-radius: 8px;
+        box-shadow: 0 18px 46px rgba(23,33,43,0.09);
+    }
+
+    [data-testid="stForm"] label p {
+        color: #34414c;
+        font-size: 13px;
+        font-weight: 700;
+    }
+
+    [data-testid="stTextInput"] input {
+        min-height: 48px;
+        color: var(--login-ink);
+        background: #f8fafb;
+        border: 1px solid #cdd6dc;
+        border-radius: 6px;
+        font-size: 15px;
+    }
+
+    [data-testid="stTextInput"] input:focus {
+        border-color: var(--login-brand);
+        box-shadow: 0 0 0 3px rgba(18,63,58,0.12);
+    }
+
+    [data-testid="stFormSubmitButton"] button {
+        min-height: 48px;
+        margin-top: 8px;
+        color: #ffffff;
+        background: var(--login-brand);
+        border: 1px solid var(--login-brand);
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 760;
+    }
+
+    [data-testid="stFormSubmitButton"] button:hover {
+        color: #ffffff;
+        background: var(--login-brand-deep);
+        border-color: var(--login-brand-deep);
+    }
+
+    [data-testid="stAlert"] {
+        border-radius: 6px;
+        border-width: 1px;
+    }
+
+    .login-security-note {
+        display: flex;
+        align-items: flex-start;
+        gap: 11px;
+        margin: 18px 6px 0;
+        color: var(--login-muted);
+        font-size: 12px;
+        line-height: 1.55;
+    }
+
+    .login-security-note b {
+        display: block;
+        flex: 0 0 auto;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        color: var(--login-brand);
+        background: var(--login-soft);
+        text-align: center;
+        line-height: 22px;
+        font-size: 12px;
+    }
+
+    .login-legal {
+        margin-top: 30px;
+        padding: 18px 0 28px;
+        color: #7a858e;
+        border-top: 1px solid rgba(23,33,43,0.09);
+        font-size: 11px;
         text-align: center;
     }
 
-    .login-sub {
-        text-align: center;
-        color: rgba(255,255,255,0.72);
-        margin-bottom: 24px;
+    @media (max-width: 840px) {
+        [data-testid="stMainBlockContainer"],
+        .block-container {
+            width: min(100% - 28px, 620px);
+        }
+
+        .login-topline {
+            margin-bottom: 18px;
+        }
+
+        .login-environment {
+            display: none;
+        }
+
+        [data-testid="stHorizontalBlock"] {
+            flex-direction: column;
+        }
+
+        [data-testid="column"] {
+            width: 100%;
+            flex: 1 1 100%;
+        }
+
+        .login-brand-panel {
+            min-height: 335px;
+            padding: 30px;
+        }
+
+        .login-brand-panel h1 {
+            font-size: 38px;
+        }
+
+        .login-brand-footer {
+            display: none;
+        }
+
+        .login-form-heading {
+            padding-top: 10px;
+        }
+    }
+
+    @media (max-width: 480px) {
+        .login-topline {
+            min-height: 62px;
+        }
+
+        .login-brand-panel {
+            min-height: 300px;
+            padding: 24px;
+        }
+
+        .login-brand-panel h1 {
+            font-size: 32px;
+        }
+
+        .login-brand-panel p {
+            font-size: 14px;
+        }
+
+        [data-testid="stForm"] {
+            padding: 22px;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
 
     st.markdown("""
-    <div class="login-wrap">
-        <div class="login-title">🔐 Güvenli Giriş</div>
-        <div class="login-sub">
-            Perge Mimarlık & Squarexpo<br>
-            Fuar Müşteri Otomasyonu V3.1
+    <div class="login-topline">
+        <div class="login-wordmark">
+            <div class="login-monogram">PS</div>
+            <div>
+                <strong>PERGE × SQUAREXPO</strong>
+                <span>Fuar Veri Operasyonları</span>
+            </div>
         </div>
+        <div class="login-environment"><i></i> Güvenli erişim servisi aktif</div>
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 2, 1])
+    brand_col, form_col = st.columns([1.18, 0.82])
 
-    with col2:
+    with brand_col:
+        st.markdown("""
+        <section class="login-brand-panel">
+            <div>
+                <div class="login-kicker">Kurumsal çalışma alanı</div>
+                <h1>Fuar Veri<br>Operasyon Merkezi</h1>
+                <p>
+                    Yetkili ekipler için merkezi araştırma, doğrulama ve
+                    müşteri veri yönetimi çalışma alanı.
+                </p>
+            </div>
+            <div class="login-brand-footer">
+                <div>
+                    <strong>Perge Mimarlık</strong>
+                    <span>Kurumsal çözüm ortağı</span>
+                </div>
+                <div>
+                    <strong>Squarexpo</strong>
+                    <span>Fuar ve etkinlik operasyonları</span>
+                </div>
+                <div>
+                    <strong>V3.1</strong>
+                    <span>Güvenli operasyon paneli</span>
+                </div>
+            </div>
+        </section>
+        """, unsafe_allow_html=True)
+
+    with form_col:
+        st.markdown("""
+        <div class="login-form-heading">
+            <div class="eyebrow">Yetkili kullanıcı erişimi</div>
+            <h2>Hesabınıza giriş yapın</h2>
+            <p>Kurumsal kullanıcı bilgilerinizle güvenli oturum başlatın.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
         if not config["username"] or not config["password"]:
             st.error(
                 "Giriş bilgileri yapılandırılmamış. Sunucuda PANEL_USERNAME ve "
@@ -212,13 +595,29 @@ def giris_ekrani():
             st.stop()
 
         with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Kullanıcı Adı")
-            password = st.text_input("Şifre", type="password")
+            username = st.text_input(
+                "Kullanıcı adı",
+                placeholder="Kurumsal kullanıcı adınız",
+                key="login_username"
+            )
+            password = st.text_input(
+                "Şifre",
+                type="password",
+                placeholder="Şifrenizi girin",
+                key="login_password"
+            )
             submitted = st.form_submit_button(
-                "🚀 Giriş Yap",
+                "Güvenli giriş yap",
                 type="primary",
                 use_container_width=True
             )
+
+        st.markdown("""
+        <div class="login-security-note">
+            <b>✓</b>
+            <span>Oturumlar zaman aşımı, hatalı deneme kilidi ve güvenli kimlik doğrulama ile korunur.</span>
+        </div>
+        """, unsafe_allow_html=True)
 
         if submitted:
             username_ok = hmac.compare_digest(username.strip(), config["username"])
@@ -243,6 +642,13 @@ def giris_ekrani():
                 )
             else:
                 st.error("Kullanıcı adı veya şifre hatalı.")
+
+    st.markdown("""
+    <div class="login-legal">
+        Bu sistem yalnızca yetkilendirilmiş kullanıcıların erişimine açıktır.
+        Tüm erişim denemeleri güvenlik politikalarına tabidir.
+    </div>
+    """, unsafe_allow_html=True)
 
     st.stop()
 
